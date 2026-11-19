@@ -66,7 +66,7 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({"&": "&amp;", "<": "
 /* ---------- proforma modeli ---------- */
 function baseQuote() {
   return {id: rid(), title: TITLES[0], no: "", date: today(), currency: "USD",
-    buyer: "", address: "", country: "", contact: "", phone: "", email: "", taxId: "",
+    customerId: "", buyer: "", address: "", city: "", country: "", contact: "", phone: "", email: "", taxOffice: "", taxId: "",
     payment: "", delivery: "", validity: "", dtime: "",
     items: [], status: "draft", saved: false, dirty: false};
 }
@@ -86,7 +86,7 @@ function normItem(it) {
   it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => ({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}));
   return it;
 }
-const QUOTE_TEXT = ["id", "title", "no", "buyer", "address", "country", "contact", "phone", "email", "taxId", "payment", "delivery", "validity", "dtime"];
+const QUOTE_TEXT = ["id", "title", "no", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
 function normQuote(q) {
   q = Object.assign(baseQuote(), q);
   QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
@@ -124,7 +124,21 @@ const missingPrice = it => !hasPrice(it.price) || (it.opts || []).some(o => !has
 function optName(o) { const p = pById(o.oid); return p ? p.name : (o.name || ""); }
 function itemInfo(it) { const p = pById(it.pid) || it.snap || {}; return {code: p.code || "", name: p.name || "", type: p.type || ""}; }
 const isSpareOnly = q => q.items.length > 0 && q.items.every(it => { const t = itemInfo(it).type; return t === "SPARE" || t === "OTHER"; });
-const addrLine = q => [String(q.address || "").replace(/\s*\n\s*/g, ", ").trim(), q.country].filter(Boolean).join(", ");
+const addrLine = q => [String(q.address || "").replace(/\s*\n\s*/g, ", ").trim(), q.city, q.country].filter(Boolean).join(", ");
+
+/* ---------- cari kart ---------- */
+const CARI_TEXT = ["code", "name", "taxOffice", "taxId", "address", "city", "country", "contact", "phone", "email", "currency", "payment", "delivery", "notes"];
+function normCari(c) {
+  const o = {id: str(c && c.id)}; CARI_TEXT.forEach(k => { o[k] = str(c && c[k]).slice(0, k === "notes" || k === "address" ? 1000 : 200); });
+  if (!CUR[o.currency]) o.currency = "USD"; o.createdAt = Number(c && c.createdAt) || 0; o.updatedAt = Number(c && c.updatedAt) || 0; return o;
+}
+function nextCariCode() { let max = 0; S.customers.forEach(c => { const m = /^C(\d+)$/.exec(c.code || ""); if (m) max = Math.max(max, +m[1]); }); return "C" + String(max + 1).padStart(4, "0"); }
+/* seçilen cari kartın bilgileri proformaya kopyalanır (proforma kendi kopyasını saklar; kart sonradan değişse de eski proforma bozulmaz) */
+function applyCari(q, c) {
+  Object.assign(q, {customerId: c.id, buyer: c.name, address: c.address, city: c.city, country: c.country, contact: c.contact, phone: c.phone, email: c.email, taxOffice: c.taxOffice, taxId: c.taxId});
+  if (!q.saved) { if (CUR[c.currency]) q.currency = c.currency; if (c.payment && !q.payment) q.payment = c.payment; if (c.delivery && !q.delivery) q.delivery = c.delivery; }
+  return q;
+}
 
 /* açıklama satırları [{t, red}] — önizleme, PDF ve Excel aynı metni kullanır */
 function descLines(it) {

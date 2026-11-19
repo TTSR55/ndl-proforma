@@ -1,11 +1,12 @@
 # NDL Proforma
 
-NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar, alıcılar, ürün kütüphanesi ve firma/banka bilgileri her hesaba özel tutulur.
+NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar, cari kartlar, ürün kütüphanesi ve firma/banka bilgileri her hesaba özel tutulur.
 
-- **Proforma:** alıcı bilgileri → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
+- **Üyelik ve onay:** yeni kayıtlar yönetici onayını bekler; yönetici *Yönetim* sayfasından hesapları onaylar, dondurur ya da siler. İlk kaydolan hesap yönetici olur.
+- **Proforma:** cari kart seçimi → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
 - **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
 - **Kayıtlar:** arama, para birimi ve tarih filtresi; *Tekrarla* ile yeni numarayla kopya
-- **Alıcılar, Ürünler, Firma:** kayıtlı firmalar, düzenlenebilir ürün kütüphanesi (NDL 2026 kataloğuyla başlar), proforma üst/alt bilgileri
+- **Cari, Ürünler, Firma:** cari kart oluşturma ve düzenleme, düzenlenebilir ürün kütüphanesi (NDL 2026 kataloğuyla başlar), proforma üst/alt bilgileri
 - **Örnek şablon:** yeni hesaplar boş bir proformayla başlar. İsteyen *Örnek şablonu aç* ile hayali bir firma ve yer tutucu fiyatlarla doldurulmuş bir örnek görebilir; bu şablon gerçek bir müşteri ya da teklif içermez.
 
 Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supabase.com) kullanır; derleme adımı yoktur.
@@ -41,7 +42,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
 | `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
 | `config.js` | Supabase bağlantı bilgileri |
-| `schema.sql` | Veritabanı tablosu ve RLS kuralları |
+| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), onay ve yönetici fonksiyonları |
 | `duelsan.jpg`, `ndl.jpg` | Proforma logoları |
 
 ## Yerelde çalıştırma

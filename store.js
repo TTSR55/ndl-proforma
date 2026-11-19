@@ -12,6 +12,10 @@ function authError(e) {
   const code = (e && (e.code || e.error_code)) || "", msg = String((e && (e.message || e.error_description)) || e || "");
   const has = s => code === s || msg.toLowerCase().includes(s.replace(/_/g, " "));
   if (has("invalid_credentials") || /invalid login credentials/i.test(msg)) return "E-posta veya şifre hatalı.";
+  if (has("user_banned") || /banned/i.test(msg)) return "Hesabınız yönetici tarafından donduruldu. Bilgi için yöneticinizle görüşün.";
+  if (/not_admin/.test(msg)) return "Bu işlem için yönetici yetkisi gerekiyor.";
+  if (/cannot_change_self/.test(msg)) return "Bu işlemi kendi hesabınıza uygulayamazsınız.";
+  if (/no_user/.test(msg)) return "Kullanıcı bulunamadı; liste güncel olmayabilir.";
   if (has("email_not_confirmed") || /not confirmed/i.test(msg)) return "E-posta adresiniz henüz onaylanmadı. Gelen kutunuzdaki onay bağlantısına tıklayın.";
   if (has("user_already_exists") || /already registered/i.test(msg)) return "Bu e-posta ile kayıtlı bir hesap var. Giriş yapın ya da şifrenizi sıfırlayın.";
   if (has("weak_password") || /password should|password is known|pwned/i.test(msg)) return "Şifre yeterince güçlü değil. En az 10 karakter; büyük harf, küçük harf ve rakam kullanın.";
@@ -23,8 +27,8 @@ function authError(e) {
   if (/failed to fetch|network/i.test(msg)) return "Sunucuya ulaşılamadı. İnternet bağlantınızı kontrol edin.";
   return msg || "Beklenmeyen bir hata oluştu.";
 }
-/* docs tablosu kurulmamışsa true */
-function isMissingTable(e) { const m = String((e && e.message) || ""); return (e && (e.code === "42P01" || e.code === "PGRST205")) || /does not exist|could not find the table/i.test(m); }
+/* docs ya da profiles tablosu (veya yönetici fonksiyonları) kurulmamışsa true */
+function isMissingTable(e) { const m = String((e && e.message) || ""); return (e && (e.code === "42P01" || e.code === "PGRST205" || e.code === "PGRST202")) || /does not exist|could not find the (table|function)/i.test(m); }
 
 function supabaseStore() {
   const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: true}});
@@ -56,7 +60,9 @@ function supabaseStore() {
         if (error) throw error;
       }
     },
-    async del(kind, id) { const {error} = await sb.from("docs").delete().eq("kind", kind).eq("id", id); if (error) throw error; }
+    async del(kind, id) { const {error} = await sb.from("docs").delete().eq("kind", kind).eq("id", id); if (error) throw error; },
+    async profile() { const {data, error} = await sb.from("profiles").select("id,email,role,status").eq("id", this.uid).maybeSingle(); if (error) throw error; return data; },
+    async rpc(fn, args) { const {data, error} = await sb.rpc(fn, args || {}); if (error) throw error; return data; }
   };
 }
 
@@ -77,12 +83,15 @@ function localStore() {
     async signUp(email, pw) {
       const d = load(), e = email.toLowerCase();
       if (d.users[e]) throw {code: "user_already_exists"};
-      const salt = rid(); d.users[e] = {id: "demo-" + rid(), salt, hash: await hash(pw, salt)};
+      const salt = rid(), first = !Object.values(d.users).some(u => u.role === "admin");
+      d.users[e] = {id: "demo-" + rid(), salt, hash: await hash(pw, salt), role: first ? "admin" : "user", status: first ? "active" : "pending", created_at: new Date().toISOString()};
       d.session = {id: d.users[e].id, email: e}; save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0); return {confirm: false};
     },
     async signIn(email, pw) {
       const d = load(), e = email.toLowerCase(), u = d.users[e];
       if (!u || u.hash !== await hash(pw, u.salt)) throw {code: "invalid_credentials"};
+      if (u.status === "suspended") throw {code: "user_banned"};
+      u.last_sign_in_at = new Date().toISOString();
       d.session = {id: u.id, email: e}; save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0);
     },
     async signOut() { const d = load(); d.session = null; save(d); setTimeout(() => cb("SIGNED_OUT", null), 0); },
@@ -91,6 +100,24 @@ function localStore() {
     async loadAll() { return Object.values(load().docs[this.uid] || {}); },
     async put(kind, id, data) { const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}; m[kind + "|" + id] = {kind, id, data, updated_at: new Date().toISOString()}; save(d); },
     async putMany(rows) { const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}, now = new Date().toISOString(); rows.forEach(r => { m[r.kind + "|" + r.id] = {kind: r.kind, id: r.id, data: r.data, updated_at: now}; }); save(d); },
-    async del(kind, id) { const d = load(), m = d.docs[this.uid] || {}; delete m[kind + "|" + id]; save(d); }
+    async del(kind, id) { const d = load(), m = d.docs[this.uid] || {}; delete m[kind + "|" + id]; save(d); },
+    async profile() {
+      const d = load(), e = Object.keys(d.users).find(k => d.users[k].id === this.uid), u = e && d.users[e];
+      if (!u) return null;
+      if (!u.role) { u.role = Object.values(d.users).some(x => x.role === "admin") ? "user" : "admin"; u.status = u.role === "admin" ? "active" : "pending"; save(d); }
+      return {id: u.id, email: e, role: u.role, status: u.status};
+    },
+    async rpc(fn, args) {
+      const d = load(), me = Object.values(d.users).find(u => u.id === this.uid);
+      if (!me || me.role !== "admin" || me.status !== "active") throw {message: "not_admin"};
+      const entry = id => Object.entries(d.users).find(([, u]) => u.id === id);
+      if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length}))
+        .sort((a, b) => (b.status === "pending") - (a.status === "pending") || String(b.created_at).localeCompare(String(a.created_at)));
+      const hit = entry(args && args.target); if (!hit) throw {message: "no_user"};
+      if (hit[1].id === this.uid) throw {message: "cannot_change_self"};
+      if (fn === "admin_set_status") { if (!["active", "suspended"].includes(args.new_status)) throw {message: "bad_status"}; hit[1].status = args.new_status; hit[1].decided_at = new Date().toISOString(); save(d); return null; }
+      if (fn === "admin_delete_user") { delete d.users[hit[0]]; delete d.docs[hit[1].id]; save(d); return null; }
+      throw {message: "unknown_function"};
+    }
   };
 }
