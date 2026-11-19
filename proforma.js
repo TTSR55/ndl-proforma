@@ -3,6 +3,7 @@
 
 let LOGO_D = "", LOGO_N = "";            // data: URL; açılışta duelsan.jpg / ndl.jpg dosyalarından doldurulur
 const XLSX_SRC = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
+const XLSX_SRI = "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz";
 
 const TITLES   = ["PROFORMA INVOICE", "REVISED PROFORMA INVOICE", "QUOTATION", "PRICE OFFER"];
 /* Şartlar için genel öneriler (Incoterms ve yaygın ödeme şekilleri). Yeni proformada hiçbiri seçili gelmez. */
@@ -40,7 +41,7 @@ const products = () => (S.products.length ? S.products : CATALOG);
 const settings = () => Object.assign({}, DEFAULT_SETTINGS, S.settings || {});
 const pById = id => products().find(p => p.id === id);
 const optionProducts = () => products().filter(p => p.type === "OPTION");
-function liftSizes(p) { if (!p) return []; if (p.sizes && p.sizes.length) return p.sizes.map(String); const c = CAT_BY[p.type + "|" + p.code]; return (c && c.sizes) || []; }
+function liftSizes(p) { if (!p) return []; const src = (p.sizes && p.sizes.length) ? p.sizes : ((CAT_BY[p.type + "|" + p.code] || {}).sizes || []); return src.map(s => parseSize(String(s))).filter(Boolean).map(m => m[0] + "x" + m[1]); }
 function allSizes(p) { const s = [...liftSizes(p)]; CATALOG_SIZES.forEach(x => { if (!s.includes(x)) s.push(x); }); return s; }
 
 /* ---------- biçimlendirme ---------- */
@@ -50,7 +51,8 @@ const money  = (v, c) => nf.format(v || 0) + " " + (CUR[c] || "");
 const fmtInt = v => nfi.format(Number(v) || 0);
 const num = v => (v === "" || v == null || isNaN(Number(v))) ? 0 : Number(v);
 const hasPrice = v => v !== "" && v != null && !isNaN(Number(v));
-function fmtDate(s) { if (!s) return ""; const [y, m, d] = String(s).split("-"); return d + "/" + m + "/" + y.slice(2); }
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+function fmtDate(s) { if (!DATE_RE.test(String(s || ""))) return ""; const [y, m, d] = String(s).split("-"); return d + "/" + m + "/" + y.slice(2); }
 function today() { const d = new Date(), z = n => String(n).padStart(2, "0"); return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()); }
 function rid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function slug(s) { return String(s || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/ı/g, "i").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "x"; }
@@ -69,14 +71,30 @@ function baseQuote() {
     items: [], status: "draft", saved: false, dirty: false};
 }
 function newQuote() { const q = baseQuote(); q.no = nextNo(); q.autoNo = true; return q; }
+const str = v => (v == null ? "" : String(v));
+const numStr = v => (hasPrice(v) ? String(v) : "");
 function normItem(it) {
   it = Object.assign({pid: "", snap: null, cap: "", volt: "", mat: "", size: "", note: "", qty: 1, price: "", opts: []}, it);
+  ["pid", "volt", "mat", "note"].forEach(k => { it[k] = str(it[k]); });
+  it.cap = /^\d{1,6}$/.test(str(it.cap)) ? str(it.cap) : "";
+  it.size = it.size && parseSize(str(it.size)) ? parseSize(str(it.size)).join("x") : "";
+  it.qty = Math.max(0, Math.min(1e6, Math.round(Number(it.qty) || 0)));
+  if (it.price !== "" && it.price != null) it.price = numStr(it.price);
+  if (it.snap) it.snap = {code: str(it.snap.code), name: str(it.snap.name), type: str(it.snap.type)};
   if ((it.price === "" || it.price == null) && it.manual != null) it.price = it.manual;
   delete it.manual;
-  it.opts = (it.opts || []).filter(o => o && o.oid).map(o => ({oid: o.oid, name: o.name || "", price: o.price ?? ""}));
+  it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => ({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}));
   return it;
 }
-function normQuote(q) { q = Object.assign(baseQuote(), q); q.items = (q.items || []).map(normItem).filter(it => it.pid || it.snap); return q; }
+const QUOTE_TEXT = ["id", "title", "no", "buyer", "address", "country", "contact", "phone", "email", "taxId", "payment", "delivery", "validity", "dtime"];
+function normQuote(q) {
+  q = Object.assign(baseQuote(), q);
+  QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
+  if (!CUR[q.currency]) q.currency = "USD";
+  if (!DATE_RE.test(q.date)) q.date = today();
+  q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
+  return q;
+}
 function nextNo() {
   const pre = (settings().prefix || "PI") + new Date().getFullYear() + "/"; let max = 0;
   S.quotes.forEach(x => { const s = String(x.no || ""); if (s.startsWith(pre)) { const n = parseInt(s.slice(pre.length), 10); if (n > max) max = n; } });

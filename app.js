@@ -45,6 +45,22 @@ function toast(msg, undo) {
   t.hidden = false; S.undo = undo || null; clearTimeout(toast._t);
   toast._t = setTimeout(() => { t.hidden = true; S.undo = null; }, undo ? 6000 : 3000);
 }
+/* Şifre kuralları Supabase ayarıyla aynı: en az 10 karakter, küçük harf, büyük harf ve rakam. */
+const PW_RULES = [["len", "En az 10 karakter", p => p.length >= 10], ["lower", "Küçük harf (a-z)", p => /[a-z]/.test(p)], ["upper", "Büyük harf (A-Z)", p => /[A-Z]/.test(p)], ["digit", "Rakam (0-9)", p => /[0-9]/.test(p)]];
+const pwMissing = p => PW_RULES.filter(r => !r[2](p)).map(r => r[1].charAt(0).toLocaleLowerCase("tr") + r[1].slice(1));
+/* Have I Been Pwned "range" sorgusu: şifrenin kendisi ya da tam özeti gönderilmez, yalnızca SHA-1 özetinin ilk 5 karakteri. */
+async function pwnedCount(pw) {
+  try {
+    const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(pw));
+    const hex = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 5000);
+    const r = await fetch("https://api.pwnedpasswords.com/range/" + hex.slice(0, 5), {headers: {"Add-Padding": "true"}, signal: ctl.signal, referrerPolicy: "no-referrer"});
+    clearTimeout(t); if (!r.ok) return -1;
+    const line = (await r.text()).split("\n").find(l => l.slice(0, 35) === hex.slice(5));
+    return line ? (parseInt(line.split(":")[1], 10) || 1) : 0;
+  } catch (e) { return -1; }   /* servis yanıt vermezse kayıt engellenmez; sunucu kuralları yine geçerlidir */
+}
+function pwChecklist(id) { return `<ul class="pwreq" data-for="${id}">${PW_RULES.map(r => `<li data-r="${r[0]}">${ICON.check}${r[1]}</li>`).join("")}<li class="leak">${ICON.shield}Sızıntı listelerinde olmamalı</li></ul>`; }
 function busy(btn, on) { if (!btn || !btn.isConnected) return; btn.disabled = on; btn.classList.toggle("busy", on); }
 
 /* ---------- tema ---------- */
@@ -58,7 +74,9 @@ async function loadLogos() {
 }
 
 /* ---------- açılış ve oturum ---------- */
+function framed() { try { return window.top !== window.self; } catch (e) { return true; } }
 async function boot() {
+  if (framed()) { root.innerHTML = `<div class="auth-main" style="min-height:100%"><div class="auth-card"><h1>Bu sayfa başka bir sitenin içinde açılamaz</h1><p class="lead">Güvenliğiniz için NDL Proforma'yı doğrudan kendi adresinden açın.</p><a class="btn blue" href="${esc(location.href)}" target="_top" rel="noopener">Doğrudan aç</a></div></div>`; return; }
   applyTheme(); renderLoading(); loadLogos();
   if (HAS_SERVER) {
     if (!window.supabase) { renderFatal("Giriş servisi yüklenemedi. İnternet bağlantınızı kontrol edip sayfayı yenileyin."); return; }
@@ -160,13 +178,13 @@ function renderAuth() {
    </div></section></div>`;
   const f = root.querySelector(".auth-form input"); if (f) f.focus();
 }
-function pwField(id, name, label, ac, extra = "") {
-  return `<div class="fld"><label for="${id}">${label}</label><div class="pw ico-in">${ICON.lock}<input id="${id}" name="${name}" type="password" autocomplete="${ac}" required minlength="${ac === "new-password" ? 8 : 1}"${extra}><button type="button" class="ibtn" data-act="pw-toggle" aria-label="Şifreyi göster">${ICON.eye}</button></div></div>`;
+function pwField(id, name, label, ac, extra = "", rules = false) {
+  return `<div class="fld"><label for="${id}">${label}</label><div class="pw ico-in">${ICON.lock}<input id="${id}" name="${name}" type="password" autocomplete="${ac}" required minlength="${ac === "new-password" ? 10 : 1}" maxlength="72"${extra}><button type="button" class="ibtn" data-act="pw-toggle" aria-label="Şifreyi göster">${ICON.eye}</button></div>${rules ? pwChecklist(id) : ""}</div>`;
 }
 const emailField = v => `<div class="fld"><label for="a_email">E-posta</label><div class="ico-in">${ICON.mail}<input id="a_email" name="email" type="email" autocomplete="email" required value="${esc(v || S.authEmail)}" placeholder="ad@firma.com"></div></div>`;
 function authBody(m) {
   if (m === "signup") return `<div><div class="eyebrow soft">Yeni hesap</div><h1>Hesap oluşturun</h1></div><p class="lead">E-posta ve şifrenizle bir hesap açın. Proformalarınız, alıcılarınız ve ürün kütüphaneniz bu hesaba özel tutulur.</p>
-    <form class="auth-form" data-form="signup" novalidate>${emailField()}${pwField("a_pw", "password", "Şifre <em>en az 8 karakter</em>", "new-password")}${pwField("a_pw2", "password2", "Şifre (tekrar)", "new-password")}
+    <form class="auth-form" data-form="signup" novalidate>${emailField()}${pwField("a_pw", "password", "Şifre", "new-password", "", true)}${pwField("a_pw2", "password2", "Şifre (tekrar)", "new-password")}
     <div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">Hesap oluştur</button></form>
     <p class="auth-alt">Hesabınız var mı? <button class="link" data-act="auth" data-m="login">Giriş yapın</button></p>`;
   if (m === "reset") return `<div><div class="eyebrow soft">Şifre</div><h1>Şifremi unuttum</h1></div><p class="lead">Hesabınızın e-posta adresini yazın; şifre yenileme bağlantısı gönderelim.</p>
@@ -176,7 +194,7 @@ function authBody(m) {
     <p class="lead" style="margin:0">${m === "confirm" ? `<b>${esc(S.authEmail)}</b> adresine bir onay bağlantısı gönderdik. Bağlantıya tıkladığınızda hesabınız açılır ve bu sayfaya dönersiniz.` : `<b>${esc(S.authEmail)}</b> adresine şifre yenileme bağlantısı gönderdik. Bağlantı sizi yeni şifre belirleyeceğiniz sayfaya getirir.`}</p>
     <p class="auth-small">E-posta birkaç dakika içinde gelmezse gereksiz klasörüne bakın.</p><button class="btn wide" data-act="auth" data-m="login">Girişe dön</button></div>`;
   if (m === "recovery") return `<div><div class="eyebrow soft">Şifre</div><h1>Yeni şifre belirleyin</h1></div>
-    <form class="auth-form" data-form="recovery" novalidate>${pwField("a_pw", "password", "Yeni şifre <em>en az 8 karakter</em>", "new-password")}${pwField("a_pw2", "password2", "Yeni şifre (tekrar)", "new-password")}<div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">Şifreyi kaydet</button></form>`;
+    <form class="auth-form" data-form="recovery" novalidate>${pwField("a_pw", "password", "Yeni şifre", "new-password", "", true)}${pwField("a_pw2", "password2", "Yeni şifre (tekrar)", "new-password")}<div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">Şifreyi kaydet</button></form>`;
   return `<div><div class="eyebrow soft">Hoş geldiniz</div><h1>Giriş yapın</h1></div><p class="lead">Proformalarınıza erişmek için e-posta ve şifrenizle giriş yapın.</p>
     <form class="auth-form" data-form="login" novalidate>${emailField()}${pwField("a_pw", "password", "Şifre", "current-password")}
     <div class="row-between"><span></span><button type="button" class="link" data-act="auth" data-m="reset">Şifremi unuttum</button></div>
@@ -519,7 +537,7 @@ function pageFirm() {
     <div class="card-f"><div class="grow muted small">Değişiklikler yeni ve açık proformalara yansır.</div><div class="btns"><button class="btn ghost" data-act="firm-reset">Vazgeç</button><button class="btn blue" data-act="firm-save">${ICON.check} Kaydet</button></div></div></section>
    <section class="card"><div class="card-h"><h2 class="ttl">Hesap</h2><span class="tag ${Store.mode === "demo" ? "amber" : "green"}">${Store.mode === "demo" ? "Demo · bu tarayıcıda" : "Güvenli hesap"}</span></div>
     <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div style="height:42px;display:flex;align-items:center;font-weight:600">${esc(S.user.email)}</div></div></div>
-    <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre <em>en az 8 karakter</em>", "new-password").replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
+    <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
      <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn danger" type="button" data-act="logout">${ICON.out} Çıkış yap</button><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section></div>`;
 }
 
@@ -530,7 +548,7 @@ function renderConfirm() {
   c.innerHTML = `<div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cfT"><h3 id="cfT">${esc(x.title)}</h3><p>${x.msg}</p><div class="row"><button class="btn" data-act="cf-no">Vazgeç</button><button class="btn ${x.danger ? "red" : "blue"}" data-act="cf-yes">${esc(x.yes)}</button></div></div>`;
   c.hidden = false; c.querySelector('[data-act="cf-yes"]').focus();
 }
-function needsGuard() { const q = S.q; return !q.sample && q.items.length > 0 && (!q.saved || q.dirty); }
+function needsGuard() { const q = S.q; if (!q) return false; return !q.sample && q.items.length > 0 && (!q.saved || q.dirty); }
 function guard(what, fn) { if (!needsGuard()) { fn(); return; } ask({title: "Kaydedilmemiş taslak", msg: `Açık proforma (<b>${esc(S.q.no)}</b>) kaydedilmedi. ${what} bu taslak silinir.`, yes: "Devam et", fn}); }
 
 /* ---------- işlemler ---------- */
@@ -567,7 +585,7 @@ async function createProforma(btn) {
     saveDraft(); toast(q.no + " kaydedildi"); renderMain(); updateCart();
   } catch (e) { toast("Kaydedilemedi: " + authError(e)); busy(btn, false); }
 }
-function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = () => rej(new Error("Excel modülü yüklenemedi")); document.head.appendChild(s); }); }
+function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.integrity = XLSX_SRI; s.crossOrigin = "anonymous"; s.referrerPolicy = "no-referrer"; s.onload = res; s.onerror = () => rej(new Error("Excel modülü yüklenemedi")); document.head.appendChild(s); }); }
 function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().replace(/[.\s]+$/, ""); }
 function saveBlob(blob, name) { const u = URL.createObjectURL(blob), a = document.createElement("a"); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 5000); }
 async function makeFile(kind, src, btn) {
@@ -617,10 +635,14 @@ async function saveFirm(btn) {
 /* ---------- olaylar ---------- */
 document.addEventListener("input", e => {
   const t = e.target, d = t.dataset;
+  if (t.type === "password" || (t.name === "password" && t.closest("[data-form]"))) {
+    const ul = document.querySelector(`.pwreq[data-for="${t.id}"]`);
+    if (ul) { PW_RULES.forEach(r => { const li = ul.querySelector(`[data-r="${r[0]}"]`); if (li) li.classList.toggle("ok", r[2](t.value)); }); const lk = ul.querySelector(".leak"); if (lk) lk.classList.remove("bad"); }
+  }
   if (t.id === "gSearch") { S.qSearch = t.value; if (S.view !== "proformalar") go("proformalar"); else renderMain(); return; }
   if (d.q) {
     S.q[d.q] = t.value; if (d.q === "no") S.q.autoNo = false; touch();
-    if (d.q === "currency") { renderMain(); return; }
+    if (d.q === "currency") { if (!CUR[S.q.currency]) S.q.currency = "USD"; renderMain(); return; }
     refreshIntro(); refreshPaper(); return;
   }
   if (d.c && t.tagName !== "SELECT") {
@@ -657,8 +679,18 @@ document.addEventListener("submit", async e => {
   setErr("");
   if (["login", "signup", "reset"].includes(kind) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setErr("Geçerli bir e-posta adresi yazın.");
   if (kind === "login" && !pw) return setErr("Şifrenizi yazın.");
-  if (["signup", "recovery", "pwchange"].includes(kind)) { if (pw.length < 8) return setErr("Şifre en az 8 karakter olmalı."); if (pw !== pw2) return setErr("Şifreler eşleşmiyor."); }
+  const newPw = ["signup", "recovery", "pwchange"].includes(kind);
+  if (newPw) {
+    const miss = pwMissing(pw); if (miss.length) return setErr("Şifrede eksik: " + miss.join(", ") + ".");
+    if (pw.length > 72) return setErr("Şifre en fazla 72 karakter olabilir.");
+    if (pw !== pw2) return setErr("Şifreler eşleşmiyor.");
+    if (email && pw.toLowerCase().includes(email.split("@")[0].toLowerCase())) return setErr("Şifre e-posta adınızı içermemeli.");
+  }
   busy(btn, true);
+  if (newPw) {
+    const n = await pwnedCount(pw);
+    if (n > 0) { busy(btn, false); const leak = f.querySelector(".pwreq .leak"); if (leak) leak.classList.add("bad"); return setErr(`Bu şifre bilinen veri sızıntılarında ${n.toLocaleString("tr-TR")} kez görülmüş; Chrome'un uyardığı durum budur. Başka bir yerde kullanmadığınız yeni bir şifre seçin.`); }
+  }
   try {
     if (kind === "login") { await Store.signIn(email, pw); if (!S.user) { const u = await Store.session(); if (u) await enter(u); } }
     else if (kind === "signup") { const r = await Store.signUp(email, pw); S.authEmail = email; if (r.confirm) { S.auth = "confirm"; renderAuth(); } }
@@ -680,7 +712,7 @@ document.addEventListener("click", async e => {
     case "pw-toggle": { const inp = b.parentElement.querySelector("input"); const show = inp.type === "password"; inp.type = show ? "text" : "password"; b.innerHTML = show ? ICON.eyeOff : ICON.eye; b.setAttribute("aria-label", show ? "Şifreyi gizle" : "Şifreyi göster"); break; }
     case "demo-on": lsSet(DEMO_FLAG, "1"); Store = localStore(); Store.onChange(onAuth); S.auth = "signup"; renderAuth(); break;
     case "demo-off": lsSet(DEMO_FLAG, null); location.reload(); break;
-    case "logout": S.menu = null; try { await Store.signOut(); } catch (x) {} if (S.user || !$("top")) leave(); break;
+    case "logout": S.menu = null; guard("Çıkış yapılırsa", async () => { if (S.user) lsSet(draftKey(), null); clearTimeout(draftT); try { await Store.signOut(); } catch (x) {} if (S.user || !$("top")) leave(); }); break;
     case "reload": location.reload(); break;
     case "copy-sql": { const t = ($("sqlBox") || {}).textContent || ""; try { await navigator.clipboard.writeText(t); toast("SQL kopyalandı"); } catch (x) { const r = document.createRange(); r.selectNodeContents($("sqlBox")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Metin seçildi; kopyalayın"); } break; }
     /* çerçeve */

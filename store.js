@@ -14,7 +14,9 @@ function authError(e) {
   if (has("invalid_credentials") || /invalid login credentials/i.test(msg)) return "E-posta veya şifre hatalı.";
   if (has("email_not_confirmed") || /not confirmed/i.test(msg)) return "E-posta adresiniz henüz onaylanmadı. Gelen kutunuzdaki onay bağlantısına tıklayın.";
   if (has("user_already_exists") || /already registered/i.test(msg)) return "Bu e-posta ile kayıtlı bir hesap var. Giriş yapın ya da şifrenizi sıfırlayın.";
-  if (has("weak_password") || /password should be/i.test(msg)) return "Şifre yeterince güçlü değil. En az 8 karakter, harf ve rakam kullanın.";
+  if (has("weak_password") || /password should|password is known|pwned/i.test(msg)) return "Şifre yeterince güçlü değil. En az 10 karakter; büyük harf, küçük harf ve rakam kullanın.";
+  if (has("same_password") || /should be different/i.test(msg)) return "Yeni şifre eskisinden farklı olmalı.";
+  if (has("reauthentication_needed") || /reauthenticat/i.test(msg)) return "Güvenlik nedeniyle şifre değiştirmek için yakın zamanda giriş yapmış olmanız gerekiyor. Çıkış yapıp yeniden giriş yapın, sonra tekrar deneyin.";
   if (/rate limit|too many/i.test(msg) || code === "over_email_send_rate_limit") return "Çok sık deneme yapıldı. Birkaç dakika sonra tekrar deneyin.";
   if (has("validation_failed") || /invalid format|unable to validate email/i.test(msg)) return "E-posta adresini kontrol edin.";
   if (code === "demo_reset") return "Demo modunda şifre sıfırlama e-postası gönderilemez.";

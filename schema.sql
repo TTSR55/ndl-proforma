@@ -28,5 +28,14 @@ create policy "docs_insert_own" on public.docs for insert to authenticated with 
 create policy "docs_update_own" on public.docs for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "docs_delete_own" on public.docs for delete to authenticated using ((select auth.uid()) = user_id);
 
+-- Yalnızca gereken yetkiler: okuma, ekleme, güncelleme, silme. TRUNCATE / TRIGGER / REFERENCES verilmez (TRUNCATE satır kurallarını atlar).
+revoke all on public.docs from anon, authenticated;
 grant select, insert, update, delete on public.docs to authenticated;
-revoke all on public.docs from anon;
+
+-- Veri sınırları: id en fazla 120 karakter, data bir JSON nesnesi ve en fazla 256 KB.
+alter table public.docs drop constraint if exists docs_id_len;
+alter table public.docs drop constraint if exists docs_data_object;
+alter table public.docs drop constraint if exists docs_data_size;
+alter table public.docs add constraint docs_id_len check (char_length(id) between 1 and 120);
+alter table public.docs add constraint docs_data_object check (jsonb_typeof(data) = 'object');
+alter table public.docs add constraint docs_data_size check (pg_column_size(data) <= 262144);
