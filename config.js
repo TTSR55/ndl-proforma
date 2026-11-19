@@ -4,5 +4,5 @@
    service_role / secret anahtarı ASLA buraya yazmayın. */
 window.NDL_CONFIG = {
   supabaseUrl: "https://ggykdpmkzebgabsixlsr.supabase.co",
-  supabaseAnonKey: ""    // Supabase → Project Settings → API Keys → "Publishable key" (sb_publishable_...) buraya
+  supabaseAnonKey: "sb_publishable_JoT0fCRI_p7bqU2IH2n6gg_YG13IaWx"    // Supabase → Project Settings → API Keys → "Publishable key" (sb_publishable_...) buraya
 };
