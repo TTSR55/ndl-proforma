@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NDL Proforma</title>
+<meta name="description" content="NDL lift proforma portalı: kütüphaneden ürün yapılandırma, PDF ve Excel proforma, kullanıcıya özel kayıt.">
+<meta name="theme-color" content="#FFFFFF">
+<link rel="icon" href="ndl.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Arayüz Apple'ın San Francisco (SF Pro) sistem fontunu kullanır; Apple dışı cihazlarda Inter devreye girer. Roboto yalnızca A4 proforma içindir. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:ital,wght@0,400;0,700;1,400;1,700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="root"><div class="loading"><img src="ndl.jpg" alt="NDL" width="64"><p>Yükleniyor…</p></div></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="confirm-back" id="confirm" hidden></div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/pdfmake.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/vfs_fonts.js"></script>
+<script src="catalog.js"></script>
+<script src="proforma.js"></script>
+<script src="store.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

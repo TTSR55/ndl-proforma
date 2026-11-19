@@ -1,0 +1,53 @@
+# NDL Proforma
+
+NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar, alıcılar, ürün kütüphanesi ve firma/banka bilgileri her hesaba özel tutulur.
+
+- **Proforma:** alıcı bilgileri → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
+- **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
+- **Kayıtlar:** arama, para birimi ve tarih filtresi; *Tekrarla* ile yeni numarayla kopya
+- **Alıcılar, Ürünler, Firma:** kayıtlı firmalar, düzenlenebilir ürün kütüphanesi (NDL 2026 kataloğuyla başlar), proforma üst/alt bilgileri
+- **Örnek şablon:** yeni hesaplar boş bir proformayla başlar. İsteyen *Örnek şablonu aç* ile hayali bir firma ve yer tutucu fiyatlarla doldurulmuş bir örnek görebilir; bu şablon gerçek bir müşteri ya da teklif içermez.
+
+Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supabase.com) kullanır; derleme adımı yoktur.
+
+## Kurulum (bir kez, ~10 dakika)
+
+1. **Supabase projesi açın.** supabase.com → *New project*. Bölge olarak Avrupa'dan birini (ör. Frankfurt) seçin. Veritabanı şifresini kendiniz belirleyin ve saklayın.
+2. **Tabloyu kurun.** Supabase → *SQL Editor* → *New query* → bu depodaki [`schema.sql`](schema.sql) dosyasının tamamını yapıştırın → *Run*.
+3. **Site adresini tanıtın.** Supabase → *Authentication* → *URL Configuration*:
+   - *Site URL*: `https://KULLANICI-ADINIZ.github.io/ndl-proforma/`
+   - *Redirect URLs*: aynı adresi ekleyin.
+   Onay ve şifre yenileme e-postalarındaki bağlantılar bu adrese döner.
+4. **Bağlantı bilgilerini yazın.** Supabase → *Project Settings* → *API* sayfasından **Project URL** ve **anon / publishable** anahtarı kopyalayın. GitHub'da [`config.js`](config.js) dosyasını açın → kalem simgesi → iki değeri tırnakların içine yapıştırın → *Commit changes*.
+5. Birkaç dakika sonra siteyi açın, **Hesap oluşturun**, e-postanızdaki onay bağlantısına tıklayın.
+
+> `config.js` boşken site **demo modunu** önerir: hesaplar ve veriler yalnızca o tarayıcıda tutulur. Arayüzü denemek içindir.
+
+## Güvenlik
+
+- `anon` / `publishable` anahtar tarayıcıda kullanılmak için tasarlanmıştır ve herkese açık olabilir. Verileri `schema.sql`'deki satır düzeyi güvenlik (RLS) kuralları korur: her kullanıcı yalnızca kendi satırlarını görür ve değiştirir.
+- `service_role` / `secret` anahtarı **asla** bu depoya yazmayın.
+- Firma unvanı, adres ve banka bilgileri koda yazılmaz; her kullanıcı *Firma* sayfasından kendi hesabına girer.
+- Supabase'in ücretsiz e-posta servisi saatte birkaç e-postayla sınırlıdır. Ekip büyürse *Authentication → SMTP Settings* altından kendi e-posta sunucunuzu bağlayın.
+
+## Dosyalar
+
+| Dosya | İçerik |
+|---|---|
+| `index.html` | Sayfa iskeleti ve kütüphaneler |
+| `styles.css` | Tasarım (SF Pro sistem fontu, açık/koyu tema, telefon yerleşimi) |
+| `app.js` | Arayüz: giriş, menü, sayfalar, olaylar |
+| `proforma.js` | Fiyat hesabı, proforma sayfası, PDF ve Excel üreticileri |
+| `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
+| `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
+| `config.js` | Supabase bağlantı bilgileri |
+| `schema.sql` | Veritabanı tablosu ve RLS kuralları |
+| `duelsan.jpg`, `ndl.jpg` | Proforma logoları |
+
+## Yerelde çalıştırma
+
+```bash
+python3 -m http.server 8000
+```
+
+Ardından `http://localhost:8000` adresini açın.
