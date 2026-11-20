@@ -25,6 +25,7 @@ function authError(e) {
   if (has("validation_failed") || /invalid format|unable to validate email/i.test(msg)) return "E-posta adresini kontrol edin.";
   if (code === "demo_reset") return "Demo modunda şifre sıfırlama e-postası gönderilemez.";
   if (/failed to fetch|network/i.test(msg)) return "Sunucuya ulaşılamadı. İnternet bağlantınızı kontrol edin.";
+  if (code === "42501" || /row-level security|permission denied/i.test(msg)) return "Bu işlem için yetkiniz yok. Hesabınızın durumu ya da şifreniz değişmiş olabilir; sayfayı yenileyip tekrar giriş yapın.";
   return msg || "Beklenmeyen bir hata oluştu.";
 }
 /* docs ya da profiles tablosu (veya yönetici fonksiyonları) kurulmamışsa true */

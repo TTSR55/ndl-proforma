@@ -41,13 +41,15 @@ alter table public.profiles enable row level security;
 alter table public.profiles add column if not exists must_change boolean not null default false;
 
 -- 3) Yardımcı fonksiyonlar (security definer: profilleri kuralların dışında okur; arama yolu boş) -------
+--    Geçici şifre bekleyen hesap (must_change) yeni şifresini belirleyene kadar veriye erişemez. Böylece
+--    şifre sıfırlanmadan önce açılmış eski bir oturumun elindeki erişim anahtarı da hemen işe yaramaz hâle gelir.
 create or replace function public.is_active() returns boolean
 language sql stable security definer set search_path = '' as $$
-  select exists (select 1 from public.profiles p where p.id = auth.uid() and p.status = 'active');
+  select exists (select 1 from public.profiles p where p.id = auth.uid() and p.status = 'active' and not p.must_change);
 $$;
 create or replace function public.is_admin() returns boolean
 language sql stable security definer set search_path = '' as $$
-  select exists (select 1 from public.profiles p where p.id = auth.uid() and p.status = 'active' and p.role = 'admin');
+  select exists (select 1 from public.profiles p where p.id = auth.uid() and p.status = 'active' and not p.must_change and p.role = 'admin');
 $$;
 
 -- 4) Yeni hesap → onay bekleyen profil; e-posta değişince profil güncellenir ---------------------------
