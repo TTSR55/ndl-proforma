@@ -4,8 +4,9 @@ NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; pr
 
 - **Üyelik ve onay:** yeni kayıtlar yönetici onayını bekler; yönetici *Yönetim* sayfasından hesapları onaylar, dondurur ya da siler. İlk kaydolan hesap yönetici olur.
 - **Proforma:** cari kart seçimi → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
+- **Sistem numarası:** her proformaya oluşturulduğu anda veritabanı bir numara verir (ör. PI2026/0007). Numara şirket genelinde tektir, sırayla artar ve sonradan değiştirilemez; düzenlenen proforma numarasını korur.
 - **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
-- **Kayıtlar:** arama, para birimi ve tarih filtresi; *Tekrarla* ile yeni numarayla kopya
+- **Kayıtlar:** arama, cari kart, para birimi ve tarih filtresi; *Düzenle* ile değiştirme, *Tekrarla* ile yeni numaralı kopya. Her cari kartın altında o cariye ait proformalar listelenir.
 - **Cari, Ürünler, Firma:** cari kart oluşturma ve düzenleme, düzenlenebilir ürün kütüphanesi (NDL 2026 kataloğuyla başlar), proforma üst/alt bilgileri
 - **Örnek şablon:** yeni hesaplar boş bir proformayla başlar. İsteyen *Örnek şablonu aç* ile hayali bir firma ve yer tutucu fiyatlarla doldurulmuş bir örnek görebilir; bu şablon gerçek bir müşteri ya da teklif içermez.
 

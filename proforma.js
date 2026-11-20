@@ -70,7 +70,8 @@ function baseQuote() {
     payment: "", delivery: "", validity: "", dtime: "",
     items: [], status: "draft", saved: false, dirty: false};
 }
-function newQuote() { const q = baseQuote(); q.no = nextNo(); q.autoNo = true; return q; }
+/* Proforma numarasını oluşturma anında veritabanı verir (şirket genelinde tek sayaç, değiştirilemez). Taslakta numara yoktur. */
+function newQuote() { return baseQuote(); }
 const str = v => (v == null ? "" : String(v));
 const numStr = v => (hasPrice(v) ? String(v) : "");
 function normItem(it) {
@@ -86,7 +87,7 @@ function normItem(it) {
   it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => ({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}));
   return it;
 }
-const QUOTE_TEXT = ["id", "title", "no", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
+const QUOTE_TEXT = ["id", "title", "no", "sysNo", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
 function normQuote(q) {
   q = Object.assign(baseQuote(), q);
   QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
@@ -94,11 +95,6 @@ function normQuote(q) {
   if (!DATE_RE.test(q.date)) q.date = today();
   q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
   return q;
-}
-function nextNo() {
-  const pre = (settings().prefix || "PI") + new Date().getFullYear() + "/"; let max = 0;
-  S.quotes.forEach(x => { const s = String(x.no || ""); if (s.startsWith(pre)) { const n = parseInt(s.slice(pre.length), 10); if (n > max) max = n; } });
-  return pre + String(max + 1).padStart(4, "0");
 }
 /* İsteğe bağlı örnek şablon: tamamen hayali bir firma ve katalogdan rastgele seçilmiş ürünler, yer tutucu fiyatlar.
    Gerçek bir müşteri ya da teklifle ilgisi yoktur; kullanıcı yalnızca "Örnek şablonu aç" derse açılır. */
@@ -111,7 +107,7 @@ function templateQuote() {
     items: [L("NDL 5010", {cap: "750", mat: "ALU", size: "2200x1800", volt: "12 V", qty: 2, price: "1000"}),
       L("NDL 5050", {cap: "500", mat: "STEEL", size: "2080x1100", volt: "24 V", qty: 1, price: "1000", opts: op("WARNING LIGHT")}),
       L("NDL 5030", {cap: "500", mat: "ALU", size: "1160x980", volt: "12 V", qty: 3, price: "1000"})]});
-  q.no = nextNo(); q.autoNo = true; return q;
+  return q;
 }
 
 const basePrice   = it => num(it.price);
@@ -206,7 +202,7 @@ function paperHtml(q, live) {
    <div class="p-title">${esc(q.title)}</div>
    <table class="p-info"><tbody>
      <tr><td class="lb">BUYER</td><td>${esc(q.buyer)}</td><td class="rl">DATE</td><td class="rv">${fmtDate(q.date)}</td></tr>
-     <tr><td class="lb">ADDRESS</td><td>${esc(addrLine(q))}</td><td class="rl">NO</td><td class="rv">${esc(q.no)}</td></tr>
+     <tr><td class="lb">ADDRESS</td><td>${esc(addrLine(q))}</td><td class="rl">NO</td><td class="rv">${esc(q.no || "TASLAK")}</td></tr>
      <tr><td class="lb">PAYMENT TERM</td><td>${esc(q.payment)}</td><td class="rl">DELIVERY TERM</td><td class="rv">${esc(q.delivery)}</td></tr>
      <tr><td class="lb">OFFER VALIDITY</td><td>${esc(q.validity)}</td><td class="rl">DELIVERY TIME</td><td class="rv">${esc(q.dtime)}</td></tr>
      <tr><td class="lb">ORIGIN OF THE GOODS</td><td>${esc(st.origin)}</td><td class="rl">HS CODE</td><td class="rv">${esc(st.hs)}</td></tr>
@@ -238,7 +234,7 @@ function pdfDoc(q) {
   });
   if (!q.items.length) body.push([cell("", {colSpan: 6}), {}, {}, {}, {}, {}]);
   body.push([{text: "", colSpan: 3, border: [false, false, false, false]}, {}, {}, cell("TOTAL", {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]]
+  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]]
     .map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
   const bank = [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
   const thin = {hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B};
@@ -278,7 +274,7 @@ async function buildXlsx(EX, q) {
   put("F5", "The brand of Düelsan", {size: 7, italic: true}, C());
   [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:D${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
   ws.mergeCells("A10:F10"); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]];
+  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]];
   info.forEach((r, i) => {
     const n = 12 + i;
     ws.mergeCells(`A${n}:B${n}`); ws.mergeCells(`E${n}:F${n}`);

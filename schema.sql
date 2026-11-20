@@ -93,7 +93,48 @@ grant select, insert, update, delete on public.docs to authenticated;
 revoke all on public.profiles from anon, authenticated;
 grant select on public.profiles to authenticated;
 
--- 6) Yönetici işlemleri (yalnızca aktif yönetici çalıştırabilir; kendi hesabına uygulanamaz) --------------
+-- 6) Proforma numarası: veritabanı verir, şirket genelinde tek ve sıralı, sonradan değiştirilemez ------
+--    Biçim: <önek><yıl>/<sıra>, ör. PI2026/0007. Önek her kullanıcının Firma ayarındaki "Numara öneki"dir.
+create table if not exists public.quote_counters (year int primary key, last int not null default 0);
+alter table public.quote_counters enable row level security;
+revoke all on public.quote_counters from anon, authenticated;
+
+create or replace function public.assign_quote_no() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare y int := extract(year from (now() at time zone 'Europe/Istanbul'))::int; seq int; pre text; num text;
+begin
+  if tg_op = 'UPDATE' then
+    -- kayıtlı proformanın numarası değişmez
+    if old.data ? 'sysNo' then
+      new.data := jsonb_set(jsonb_set(new.data, '{sysNo}', old.data->'sysNo'), '{no}', old.data->'sysNo');
+    end if;
+    return new;
+  end if;
+  -- var olan kaydın güncellemesi (upsert) numara harcamaz
+  if exists (select 1 from public.docs d where d.user_id = new.user_id and d.kind = new.kind and d.id = new.id) then return new; end if;
+  insert into public.quote_counters as c (year, last) values (y, 1)
+    on conflict (year) do update set last = c.last + 1 returning c.last into seq;
+  select upper(regexp_replace(coalesce(d.data->>'prefix', ''), '[^A-Za-z0-9]', '', 'g')) into pre
+    from public.docs d where d.user_id = new.user_id and d.kind = 'settings' and d.id = 'main';
+  pre := left(coalesce(nullif(pre, ''), 'PI'), 8);
+  num := pre || y || '/' || lpad(seq::text, 4, '0');
+  new.data := jsonb_set(jsonb_set(new.data, '{sysNo}', to_jsonb(num)), '{no}', to_jsonb(num));
+  return new;
+end $$;
+drop trigger if exists ndl_quote_no on public.docs;
+create trigger ndl_quote_no before insert or update on public.docs for each row when (new.kind = 'quote') execute function public.assign_quote_no();
+revoke all on function public.assign_quote_no() from public, anon, authenticated;
+create unique index if not exists docs_quote_sysno_uniq on public.docs ((data->>'sysNo')) where kind = 'quote' and data ? 'sysNo';
+
+-- sayaç, bu yıl kullanılmış en büyük numaradan devam eder
+insert into public.quote_counters (year, last)
+select extract(year from (now() at time zone 'Europe/Istanbul'))::int,
+       coalesce(max((regexp_match(data->>'no', '/(\d+)$'))[1]::int), 0)
+  from public.docs
+ where kind = 'quote' and data->>'no' ~ ('^[A-Za-z0-9]*' || extract(year from (now() at time zone 'Europe/Istanbul'))::int || '/\d+$')
+on conflict (year) do update set last = greatest(public.quote_counters.last, excluded.last);
+
+-- 7) Yönetici işlemleri (yalnızca aktif yönetici çalıştırabilir; kendi hesabına uygulanamaz) --------------
 create or replace function public.admin_list_users()
 returns table (id uuid, email text, role text, status text, created_at timestamptz, last_sign_in_at timestamptz,
                email_confirmed_at timestamptz, decided_at timestamptz, doc_count bigint)

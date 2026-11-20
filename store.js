@@ -52,7 +52,8 @@ function supabaseStore() {
       }
       return all;
     },
-    async put(kind, id, data) { const {error} = await sb.from("docs").upsert({user_id: this.uid, kind, id, data, updated_at: new Date().toISOString()}, {onConflict: "user_id,kind,id"}); if (error) throw error; },
+    /* kaydedilen satırı geri döndürür: proforma numarasını veritabanı verir (bkz. schema.sql · assign_quote_no) */
+    async put(kind, id, data) { const {data: row, error} = await sb.from("docs").upsert({user_id: this.uid, kind, id, data, updated_at: new Date().toISOString()}, {onConflict: "user_id,kind,id"}).select("data").single(); if (error) throw error; return row ? row.data : data; },
     async putMany(rows) {
       const now = new Date().toISOString();
       for (let i = 0; i < rows.length; i += 200) {
@@ -98,7 +99,18 @@ function localStore() {
     async reset() { throw {code: "demo_reset"}; },
     async setPassword(pw) { const d = load(), s = d.session; if (!s) return; const u = d.users[s.email]; u.salt = rid(); u.hash = await hash(pw, u.salt); save(d); },
     async loadAll() { return Object.values(load().docs[this.uid] || {}); },
-    async put(kind, id, data) { const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}; m[kind + "|" + id] = {kind, id, data, updated_at: new Date().toISOString()}; save(d); },
+    async put(kind, id, data) {
+      const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}, key = kind + "|" + id, old = m[key];
+      data = JSON.parse(JSON.stringify(data));
+      if (kind === "quote") {   /* sunucudaki numaralandırmanın demo karşılığı: tüm demo hesaplarında ortak sayaç */
+        if (!old) {
+          const y = new Date().getFullYear(); d.counters = d.counters || {}; d.counters[y] = (d.counters[y] || 0) + 1;
+          const pre = String(((m["settings|main"] || {}).data || {}).prefix || "PI").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "PI";
+          data.sysNo = data.no = pre + y + "/" + String(d.counters[y]).padStart(4, "0");
+        } else if (old.data && old.data.sysNo) { data.sysNo = data.no = old.data.sysNo; }
+      }
+      m[key] = {kind, id, data, updated_at: new Date().toISOString()}; save(d); return data;
+    },
     async putMany(rows) { const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}, now = new Date().toISOString(); rows.forEach(r => { m[r.kind + "|" + r.id] = {kind: r.kind, id: r.id, data: r.data, updated_at: now}; }); save(d); },
     async del(kind, id) { const d = load(), m = d.docs[this.uid] || {}; delete m[kind + "|" + id]; save(d); },
     async profile() {

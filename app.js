@@ -4,7 +4,7 @@
 const $ = id => document.getElementById(id);
 const root = $("root");
 let Store = null;
-Object.assign(S, {role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: ""}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}});
+Object.assign(S, {qCari: "", role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: ""}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}});
 const RECOVERY = /type=recovery/.test(location.hash + location.search);
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
@@ -114,6 +114,9 @@ async function enter(u) {
   if (d && !d.q.saved && !d.q.buyer.trim() && !d.q.items.length) d = null;   /* boş taslak saklanmaz; yeni, boş proformayla başlanır */
   if (d) { S.q = d.q; S.step = d.step; S.cfg = d.cfg; if (S.cfg.edit != null && !S.q.items[S.cfg.edit]) S.cfg.edit = null; }
   else { S.q = newQuote(); S.step = 1; S.cfg = newCfg(); }
+  /* taslakların numarası olmaz; kayıtlı bir taslak ise numarayı ve durumu sunucudaki kayıttan al */
+  if (S.q.saved) { const rec = S.quotes.find(x => x.id === S.q.id); if (rec) { S.q.no = rec.no || S.q.no; S.q.sysNo = rec.sysNo || ""; } else { S.q.saved = false; S.q.dirty = false; } }
+  if (!S.q.saved) { S.q.no = ""; S.q.sysNo = ""; }
   if (/access_token|error_description|type=/.test(location.hash)) history.replaceState(null, "", location.pathname + "#proforma");
   renderShell(); fromHash();
   if (S.role === "admin") loadUsers(true);
@@ -128,7 +131,7 @@ function renderGate(prof) {
 }
 function leave() {
   Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
-  S.admin = {users: null, loading: false, filter: ""}; S.cari = {sel: null, search: ""}; S.pick = {search: "", mode: ""};
+  S.admin = {users: null, loading: false, filter: ""}; S.cari = {sel: null, search: ""}; S.qCari = ""; S.pick = {search: "", mode: ""};
   S.lib.edit = null; S.openRows.clear(); S.openQ.clear(); renderAuth();
 }
 function ingest(rows) {
@@ -268,7 +271,7 @@ function statusTag(q) {
 function pageProforma() {
   const n = S.step;
   return `<div class="page"><div class="split"><aside class="intro" id="intro">${introHtml()}</aside>
-    <section class="card" id="formCard">${sampleBanner()}${n === 1 ? formBuyer() : n === 2 ? formProducts() : formReview()}</section></div>
+    <section class="card" id="formCard">${sampleBanner()}${savedBanner()}${n === 1 ? formBuyer() : n === 2 ? formProducts() : formReview()}</section></div>
     ${n === 3 ? previewCard() : itemsCard()}</div>`;
 }
 function introHtml() {
@@ -278,7 +281,7 @@ function introHtml() {
   const done = k => ({1: hasCari, 2: q.items.length > 0, 3: q.saved && !q.dirty})[k];
   return `<div class="eyebrow">${esc(hasCari ? q.buyer : "Cari kart seçilmedi")}</div><h1>${q.saved ? "Proforma Düzenle" : "Proforma Oluştur"}</h1>
    <p class="lead">Cari kartı seçin, lifti yapılandırıp proformaya ekleyin, önizleyip oluşturun.</p><hr>
-   <dl class="meta"><div><dt>Proforma no</dt><dd class="num">${esc(q.no || "—")}</dd></div><div><dt>Tarih</dt><dd>${fmtDate(q.date)}</dd></div><div><dt>Durum</dt><dd>${statusTag(q)}</dd></div>
+   <dl class="meta"><div><dt>Proforma no</dt><dd class="num">${q.no ? esc(q.no) : `<span class="muted" style="font-weight:500">oluşturulunca verilir</span>`}</dd></div><div><dt>Tarih</dt><dd>${fmtDate(q.date)}</dd></div><div><dt>Durum</dt><dd>${statusTag(q)}</dd></div>
      <div><dt>Toplam (${q.currency})</dt><dd class="amount">${money(qTotal(q), q.currency)}</dd></div></dl>
    <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
    ${!st.company ? `<div class="note-card"><b>Firma bilgileriniz eksik</b>Proformanın üst ve alt kısmındaki firma ve banka bilgilerini bir kez girmeniz yeterli.<a class="link" href="#firma">Firma bilgilerini gir ${ICON.right}</a></div>` : ""}`;
@@ -291,6 +294,12 @@ const isBlank = q => !q.saved && !q.sample && !q.buyer.trim() && !q.items.length
 function sampleBanner() {
   if (!S.q.sample) return "";
   return `<div class="banner amber"><span class="dc">${ICON.alert}</span><div class="tx"><b>Örnek şablon</b>Firma ve ürün bilgileri hayalidir, fiyatlar yer tutucudur. Kendi alıcınızı ve ürünlerinizi girerek kullanın.</div><button class="btn sm" data-act="tpl-clear">${ICON.x} Şablonu kapat</button></div>`;
+}
+function savedBanner() {
+  const q = S.q; if (!q.saved) return "";
+  const card = cariById(q.customerId);
+  return `<div class="banner${q.dirty ? " amber" : ""}"><span class="dc">${q.dirty ? ICON.alert : ICON.check}</span><div class="tx"><b>${esc(q.no)} · kayıtlı proforma</b>${q.dirty ? "Bu kayıtta kaydedilmemiş değişiklik var. Kaydetmek için Önizle ve Oluştur adımında “Değişiklikleri Kaydet” deyin." : "Bu kaydı düzenliyorsunuz; değişiklikler aynı numarayla kaydedilir. Yeni bir proforma için aşağıdaki düğmeleri kullanın."}</div>
+    ${card ? `<button class="btn sm" data-act="new-same">${ICON.plus} ${esc(card.code)} için yeni proforma</button>` : ""}<button class="btn sm" data-act="dup" data-id="cur">${ICON.copy} Tekrarla</button><button class="btn sm" data-act="new">${ICON.plus} Boş proforma</button></div>`;
 }
 function templateCard() {
   return `<div class="tpl"><div><b>Örnek şablonla görmek ister misiniz?</b><span>Hayali bir firma ve üç ürünle doldurulmuş bir proforma açılır. Gerçek bir müşteri ya da teklif içermez.</span></div><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>`;
@@ -441,11 +450,10 @@ function formReview() {
   let main;
   if (ok) main = outBtns("cur");
   else main = `<button class="btn blue" data-act="create">${ICON.check} ${q.saved ? "Değişiklikleri Kaydet" : "Proformayı Oluştur"}</button>`;
-  return `${ok ? `<div class="banner"><span class="dc">${ICON.check}</span><div class="tx"><b>${esc(q.no)} kaydedildi</b>Kayıtlar sayfasında listelenir; tekrar kullanmak için oradan seçebilirsiniz.</div><button class="btn sm" data-act="dup" data-id="cur">${ICON.copy} Tekrarla</button><button class="btn sm" data-act="new">${ICON.plus} Yeni proforma</button></div>` : ""}
-   <div class="card-h"><h2 class="ttl">Belge Bilgileri</h2></div>
+  return `<div class="card-h"><h2 class="ttl">Belge Bilgileri</h2></div>
    <div class="fgrid">
     <div class="fld"><label for="r_title">Belge başlığı</label><select id="r_title" data-q="title">${TITLES.map(t => opt(t, q.title)).join("")}${TITLES.includes(q.title) ? "" : opt(q.title, q.title)}</select></div>
-    <div class="fld"><label for="r_no">Proforma no</label><div class="with-btn"><input id="r_no" data-q="no" value="${esc(q.no)}" class="num">${q.saved ? "" : `<button class="btn" data-act="nextno" title="Kayıtlardaki son numaradan devam et">Sıradaki</button>`}</div></div>
+    <div class="fld"><span class="lbl">Proforma no <em>sistem verir</em></span><div class="sysno">${q.no ? `${ICON.lock}<b class="num">${esc(q.no)}</b>` : `<span>Oluşturulunca verilir</span>`}</div></div>
     <div class="fld"><label for="r_date">Tarih</label><div class="ico-in">${ICON.cal}<input id="r_date" type="date" data-q="date" value="${esc(q.date)}"></div></div>
     <div class="fld"><label for="r_cur">Para birimi</label><select id="r_cur" data-q="currency">${Object.keys(CUR).map(k => opt(k, q.currency, k + " (" + CUR[k] + ")")).join("")}</select></div>
     <div class="fld s2"><label for="r_pay">Ödeme şekli</label><input id="r_pay" data-q="payment" list="dlPay" value="${esc(q.payment)}"></div>
@@ -459,7 +467,7 @@ function formReview() {
      ${mp ? chk("warn", mp + " kalemde fiyat eksik") : ""}
      ${iban ? chk("ok", q.currency + " IBAN tanımlı") : chk("warn", `${q.currency} IBAN tanımlı değil · <a href="#firma">Ekle</a>`)}</div>
    ${dlist("dlPay", PAYMENTS)}${dlist("dlDel", DELIVERY)}${dlist("dlVal", VALIDITY)}${dlist("dlDt", DTIME)}
-   <div class="card-f"><button class="btn ghost" data-act="step" data-n="2">${ICON.left} Ürünler</button><div class="grow sum" style="text-align:right">${ok ? "Kayıtlı" : q.saved ? "Kaydedilmemiş değişiklik var" : "Oluşturunca Kayıtlar sayfasına eklenir"}</div><div class="btns">${main}</div></div>`;
+   <div class="card-f"><button class="btn ghost" data-act="step" data-n="2">${ICON.left} Ürünler</button><div class="grow sum" style="text-align:right">${ok ? "Kayıtlı" : q.saved ? "Kaydedilmemiş değişiklik var" : "Oluşturunca sistem numarası verilir ve cari kartın kayıtlarına eklenir"}</div><div class="btns">${main}</div></div>`;
 }
 function previewCard() {
   return `<section class="card" id="bottomCard"><div class="card-h"><h2 class="ttl">Önizleme</h2><span class="muted small">A4 · PDF ve Excel çıktısı bu sayfayla aynıdır</span><div class="acts">${outBtns("cur")}</div></div>
@@ -479,8 +487,8 @@ if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitPaper);
 /* ---------- KAYITLAR sayfası ---------- */
 function filteredQuotes() {
   const s = S.qSearch.toLowerCase().trim();
-  return S.quotes.filter(x => (!s || [x.no, x.buyer, x.country, x.address, x.title].join(" ").toLowerCase().includes(s))
-    && (!S.qCur || x.currency === S.qCur) && (!S.qFrom || String(x.date) >= S.qFrom) && (!S.qTo || String(x.date) <= S.qTo));
+  return S.quotes.filter(x => (!s || [x.no, x.buyer, x.country, x.city, x.address, x.title].join(" ").toLowerCase().includes(s))
+    && (!S.qCari || x.customerId === S.qCari) && (!S.qCur || x.currency === S.qCur) && (!S.qFrom || String(x.date) >= S.qFrom) && (!S.qTo || String(x.date) <= S.qTo));
 }
 function pageQuotes() {
   const list = filteredQuotes(), by = {};
@@ -491,16 +499,17 @@ function pageQuotes() {
       <td class="c"><span class="tag blue">${items.length} kalem</span></td><td class="r strong">${money(x.total, x.currency)}</td><td><span class="tag ${x.title === "PROFORMA INVOICE" ? "green" : "grey"}">${esc(x.title === "PROFORMA INVOICE" ? "Proforma" : x.title === "REVISED PROFORMA INVOICE" ? "Revize" : x.title === "QUOTATION" ? "Teklif" : "Fiyat teklifi")}</span></td>
       <td><div class="acts"><button class="btn green sm" data-act="q-open" data-id="${x.id}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
         <button class="btn blue sm" data-act="dup" data-id="${x.id}" title="Yeni numarayla kopyasını aç">${ICON.copy} Tekrarla</button>
-        <button class="btn sm" data-act="q-edit" data-id="${x.id}">${ICON.edit} Aç</button>
+        <button class="btn sm" data-act="q-edit" data-id="${x.id}">${ICON.edit} Düzenle</button>
         <button class="ibtn" data-act="out" data-k="pdf" data-src="${x.id}" title="PDF indir" aria-label="PDF indir">${ICON.file}</button>
         <button class="ibtn" data-act="out" data-k="xlsx" data-src="${x.id}" title="Excel indir" aria-label="Excel indir">${ICON.grid}</button>
         <button class="ibtn danger" data-act="q-del" data-id="${x.id}" title="Sil" aria-label="Proformayı sil">${ICON.trash}</button></div></td></tr>
       ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it).code + " · " + itemInfo(it).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Ödeme", esc(x.payment))}${kv("Teslim", esc(x.delivery))}</div></td></tr>` : ""}`;
   }).join("");
-  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Kayıtlar</div><h1>Proformalar</h1><p class="lead">Oluşturduğunuz proformalar yalnızca sizin hesabınızda görünür. Tekrar kullanmak için <b>Tekrarla</b> deyin; yeni numarayla kopyası açılır.</p></div>
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Kayıtlar</div><h1>Proformalar</h1><p class="lead">Her proforma bağımsız bir kayıttır ve sistem numarasıyla saklanır. <b>Düzenle</b> ile açıp değiştirebilirsiniz; numara değişmez. <b>Tekrarla</b> yeni numaralı bir kopya açar.</p></div>
      <button class="btn blue" data-act="new">${ICON.plus} Yeni Proforma</button></div>
    <div class="toolbar"><section class="card"><div class="filters">
      <div class="fld s-wide"><label for="f_s">Ara</label><div class="ico-in">${ICON.search}<input id="f_s" data-f="qSearch" value="${esc(S.qSearch)}" placeholder="No, firma veya ülke" autocomplete="off"></div></div>
+     <div class="fld"><label for="f_cari">Cari kart</label><select id="f_cari" data-f="qCari"><option value="">Tümü</option>${cariList().map(c => opt(c.id, S.qCari, c.code + " · " + c.name)).join("")}</select></div>
      <div class="fld"><label for="f_c">Para birimi</label><select id="f_c" data-f="qCur"><option value="">Tümü</option>${Object.keys(CUR).map(k => opt(k, S.qCur, k)).join("")}</select></div>
      <div class="fld"><label for="f_from">Başlangıç</label><input id="f_from" type="date" data-f="qFrom" value="${esc(S.qFrom)}"></div>
      <div class="fld"><label for="f_to">Bitiş</label><input id="f_to" type="date" data-f="qTo" value="${esc(S.qTo)}"></div>
@@ -529,12 +538,21 @@ function pageCari() {
   else { const st = e.id ? cariStats(e) : {n: 0, last: ""};
     editor = `<div class="card-h"><h2 class="ttl">${e.id ? "Cari Kart" : "Yeni Cari Kart"}</h2>${e.id ? `<span class="muted small">${st.n} proforma${st.last ? " · son " + fmtDate(st.last) : ""}</span>` : ""}</div>${cariFields(e, S.cariTried)}
      <div class="card-f">${e.id ? `<button class="btn ghost danger" data-act="cari-del" data-id="${esc(e.id)}">${ICON.trash} Sil</button>` : `<button class="btn ghost" data-act="cari-cancel">Vazgeç</button>`}
-       <div class="btns">${e.id ? `<button class="btn" data-act="cari-quote" data-id="${esc(e.id)}">${ICON.doc} Bu cariyle proforma</button>` : ""}<button class="btn blue" data-act="cari-save">${ICON.check} Kaydet</button></div></div>`; }
+       <div class="btns"><button class="btn blue" data-act="cari-save">${ICON.check} Kaydet</button></div></div>
+     ${e.id ? cariQuotes(e) : ""}`; }
   return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Cari · ${S.customers.length} kart</div><h1>Cari Kartlar</h1><p class="lead">Proforma kestiğiniz firmaların kartları. Proformaya bir cari kart seçerek başlarsınız; unvan ve adres bilgileri karttan alınır.</p></div>
      <button class="btn blue" data-act="cari-new">${ICON.plus} Yeni Cari Kart</button></div>
    <div class="lib cari"><section class="card"><div class="lib-tools"><div class="ico-in">${ICON.search}<input id="cariSearch" data-f="cari.search" value="${esc(C.search)}" placeholder="Kod, unvan, şehir, yetkili veya vergi no ara" autocomplete="off"></div></div>
      ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Kod</th><th>Unvan</th><th>Yetkili</th><th class="c">Proforma</th><th class="r">Toplam</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">${S.customers.length ? "Aramayla eşleşen kart yok." : "Henüz cari kart yok. Sağdaki formdan ya da Yeni Cari Kart ile ilk kartı oluşturun."}</div>`}</section>
     <section class="card editor">${editor}</section></div></div>`;
+}
+
+function cariQuotes(c) {
+  const qs = S.quotes.filter(x => x.customerId === c.id).sort((a, b) => String(b.no).localeCompare(String(a.no), "tr", {numeric: true}));
+  const rows = qs.map(x => `<tr class="row"><td class="code num">${esc(x.no || "—")}</td><td class="num">${fmtDate(x.date)}</td><td class="c">${(x.items || []).length}</td><td class="r strong">${money(x.total, x.currency)}</td>
+    <td><div class="acts"><button class="btn sm" data-act="q-edit" data-id="${esc(x.id)}">${ICON.edit} Düzenle</button><button class="ibtn" data-act="out" data-k="pdf" data-src="${esc(x.id)}" title="PDF indir" aria-label="PDF indir">${ICON.file}</button><button class="ibtn" data-act="out" data-k="xlsx" data-src="${esc(x.id)}" title="Excel indir" aria-label="Excel indir">${ICON.grid}</button></div></td></tr>`).join("");
+  return `<div class="cari-quotes"><div class="card-h" style="margin:22px 0 12px"><h2 class="ttl">Proformaları</h2><span class="muted small">${qs.length}</span><div class="acts"><button class="btn blue sm" data-act="cari-quote" data-id="${esc(c.id)}">${ICON.plus} Yeni proforma</button></div></div>
+    ${qs.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>No</th><th>Tarih</th><th class="c">Kalem</th><th class="r">Tutar</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu cari için henüz proforma yok. <b>Yeni proforma</b> ile ilk proformayı oluşturun.</div>`}</div>`;
 }
 
 /* ---------- YÖNETİM sayfası (yalnızca yönetici) ---------- */
@@ -622,18 +640,18 @@ function renderConfirm() {
   c.hidden = false; c.querySelector('[data-act="cf-yes"]').focus();
 }
 function needsGuard() { const q = S.q; if (!q) return false; return !q.sample && q.items.length > 0 && (!q.saved || q.dirty); }
-function guard(what, fn) { if (!needsGuard()) { fn(); return; } ask({title: "Kaydedilmemiş taslak", msg: `Açık proforma (<b>${esc(S.q.no)}</b>) kaydedilmedi. ${what} bu taslak silinir.`, yes: "Devam et", fn}); }
+function guard(what, fn) { if (!needsGuard()) { fn(); return; } ask({title: "Kaydedilmemiş taslak", msg: `Açık proforma (<b>${esc(S.q.no || "taslak")}</b>) kaydedilmedi. ${what} bu taslak silinir.`, yes: "Devam et", fn}); }
 
 /* ---------- işlemler ---------- */
 function go(v) { if (location.hash !== "#" + v) location.hash = v; else { S.view = v; renderSide(); renderMain(); } }
 function setStep(n) { S.step = n; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0); }
 function startNew(prefill) {
   S.q = newQuote(); if (prefill) Object.assign(S.q, prefill);
-  S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = prefill ? 2 : 1; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Yeni proforma: " + S.q.no);
+  S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = prefill ? 2 : 1; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Yeni proforma açıldı · numara oluşturulunca verilir");
 }
 function duplicate(src) {
   const q = normQuote(JSON.parse(JSON.stringify(src)));
-  Object.assign(q, {id: rid(), no: nextNo(), autoNo: true, date: today(), status: "draft", saved: false, dirty: false, sample: false});
+  Object.assign(q, {id: rid(), no: "", sysNo: "", date: today(), status: "draft", saved: false, dirty: false, sample: false});
   delete q.createdAt; delete q.updatedAt; delete q.total;
   if (q.title === "REVISED PROFORMA INVOICE") q.title = "PROFORMA INVOICE";
   return q;
@@ -649,10 +667,13 @@ async function createProforma(btn) {
   if (!q.items.length) { toast("Önce en az bir kalem ekleyin"); setStep(2); return; }
   busy(btn, true);
   try {
-    if (!q.saved && S.quotes.some(x => x.no === q.no && x.id !== q.id)) q.no = nextNo();
-    const d = quoteDoc(q); await Store.put("quote", q.id, d); upsertLocal(S.quotes, Object.assign({id: q.id}, d));
-    Object.assign(q, {createdAt: d.createdAt, saved: true, dirty: false, autoNo: false, status: "created", sample: false});
-    saveDraft(); toast(q.no + " kaydedildi"); renderMain(); updateCart();
+    const isNew = !q.saved, d = quoteDoc(q);
+    if (isNew) { d.no = ""; delete d.sysNo; }
+    const stored = (await Store.put("quote", q.id, d)) || d;
+    if (!stored.no) throw new Error("Proforma numarası alınamadı");
+    upsertLocal(S.quotes, Object.assign({id: q.id}, stored));
+    Object.assign(q, {no: stored.no, sysNo: stored.sysNo || "", createdAt: stored.createdAt, saved: true, dirty: false, status: "created", sample: false});
+    saveDraft(); toast(isNew ? `${q.no} oluşturuldu · ${q.buyer} kayıtlarına eklendi` : `${q.no} güncellendi`); renderMain(); updateCart();
   } catch (e) { toast("Kaydedilemedi: " + authError(e)); busy(btn, false); }
 }
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.integrity = XLSX_SRI; s.crossOrigin = "anonymous"; s.referrerPolicy = "no-referrer"; s.onload = res; s.onerror = () => rej(new Error("Excel modülü yüklenemedi")); document.head.appendChild(s); }); }
@@ -660,6 +681,8 @@ function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|]+/g, "-").rep
 function saveBlob(blob, name) { const u = URL.createObjectURL(blob), a = document.createElement("a"); a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 5000); }
 async function makeFile(kind, src, btn) {
   const raw = src === "cur" ? S.q : S.quotes.find(x => x.id === src); if (!raw || S.busy) return;
+  if (src === "cur" && !raw.saved) { toast(raw.sample ? "Örnek şablon indirilemez; bir cari kart seçip proformayı oluşturun" : "Önce proformayı oluşturun; numara oluşturulunca verilir"); if (S.step !== 3) setStep(3); return; }
+  if (src === "cur" && raw.dirty) { toast("Önce değişiklikleri kaydedin; dosya kayıtlı sürümden üretilir"); if (S.step !== 3) setStep(3); return; }
   const q = src === "cur" ? raw : normQuote(JSON.parse(JSON.stringify(raw)));
   S.busy = true; busy(btn, true);
   try {
@@ -727,7 +750,7 @@ document.addEventListener("input", e => {
   }
   if (t.id === "gSearch") { S.qSearch = t.value; if (S.view !== "proformalar") go("proformalar"); else renderMain(); return; }
   if (d.q) {
-    S.q[d.q] = t.value; if (d.q === "no") S.q.autoNo = false; touch();
+    S.q[d.q] = t.value; touch();
     if (d.q === "currency") { if (!CUR[S.q.currency]) S.q.currency = "USD"; renderMain(); return; }
     refreshIntro(); refreshPaper(); return;
   }
@@ -807,6 +830,7 @@ document.addEventListener("click", async e => {
     case "go": go(b.dataset.v); break;
     case "step": setStep(+b.dataset.n); break;
     case "new": guard("Yeni proforma açılırsa", () => startNew()); break;
+    case "new-same": { const c = cariById(q.customerId); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); setStep(2); toast(c.name + " için yeni proforma açıldı"); }); break; }
     case "tpl-open": guard("Örnek şablon açılırsa", () => { S.q = templateQuote(); S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = 3; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Örnek şablon açıldı · bilgiler hayalidir"); }); break;
     case "tpl-clear": startNew(); break;
     case "undo": if (S.undo) { S.undo(); S.undo = null; $("toast").hidden = true; } break;
@@ -836,16 +860,16 @@ document.addEventListener("click", async e => {
     case "li-del": { const [gone] = q.items.splice(i, 1); if (c.edit === i) S.cfg = newCfg(c.mode); else if (c.edit > i) c.edit--; S.openRows.clear(); touch(); renderMain();
       toast(`${itemInfo(gone).code} silindi`, () => { S.q.items.splice(Math.min(i, S.q.items.length), 0, gone); touch(); renderMain(); }); break; }
     /* belge */
-    case "nextno": q.no = nextNo(); q.autoNo = true; touch(); renderMain(); break;
     case "create": createProforma(b); break;
     case "out": makeFile(b.dataset.k, b.dataset.src, b); break;
     /* kayıtlar */
-    case "f-clear": S.qSearch = ""; S.qCur = ""; S.qFrom = ""; S.qTo = ""; if ($("gSearch")) $("gSearch").value = ""; renderMain(); break;
+    case "f-clear": S.qSearch = ""; S.qCari = ""; S.qCur = ""; S.qFrom = ""; S.qTo = ""; if ($("gSearch")) $("gSearch").value = ""; renderMain(); break;
     case "q-open": { const id = b.dataset.id; if (S.openQ.has(id)) S.openQ.delete(id); else S.openQ.add(id); renderMain(); break; }
     case "dup": { const src = b.dataset.id === "cur" ? S.q : S.quotes.find(x => x.id === b.dataset.id); if (!src) break;
       const run = () => { const n = duplicate(src); S.q = n; S.cfg = newCfg(); S.step = 3; S.openRows.clear(); saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Kopya hazır · yeni no " + n.no); };
       if (b.dataset.id === "cur") run(); else guard("Kopya açılırsa", run); break; }
     case "q-edit": { const src = S.quotes.find(x => x.id === b.dataset.id); if (!src) break;
+      if (S.q && S.q.id === src.id && S.q.saved) { go("proforma"); setStep(2); break; }
       guard("Kayıt açılırsa", () => { S.q = Object.assign(normQuote(JSON.parse(JSON.stringify(src))), {id: src.id, saved: true, dirty: false, sample: false}); S.cfg = newCfg(); S.step = 2; S.openRows.clear(); saveDraft(); updateCart(); go("proforma"); renderMain(); toast(src.no + " düzenlemeye açıldı"); }); break; }
     case "q-del": { const x = S.quotes.find(z => z.id === b.dataset.id); if (!x) break;
       ask({title: "Proforma silinsin mi?", msg: `<b>${esc(x.no)}</b> · ${esc(x.buyer || "")} kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Sil", danger: true,
@@ -862,7 +886,7 @@ document.addEventListener("click", async e => {
     case "cari-new": S.cariEdit = normCari({code: nextCariCode()}); S.cariTried = false; S.cari.sel = null; if (S.view !== "alicilar") go("alicilar"); renderMain(); setTimeout(() => { const n = $("ce_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "cari-cancel": S.cariEdit = null; renderMain(); break;
     case "cari-save": { const c = await saveCari(b); if (c) { S.cari.sel = c.id; S.cariEdit = {...c}; renderMain(); } break; }
-    case "cari-quote": { const c = cariById(b.dataset.id); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); setStep(2); }); break; }
+    case "cari-quote": { const c = cariById(b.dataset.id); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); setStep(2); toast(c.name + " için yeni proforma açıldı"); }); break; }
     case "cari-del": { const c = cariById(b.dataset.id); if (!c) break; const n = cariStats(c).n;
       ask({title: "Cari kart silinsin mi?", msg: `<b>${esc(c.code)}</b> · ${esc(c.name)} kartı kalıcı olarak silinir.${n ? ` Bu karta ait ${n} proforma silinmez; bilgileri proformalarda kalır.` : ""}`, yes: "Sil", danger: true,
         fn: async () => { try { await Store.del("customer", c.id); S.customers = S.customers.filter(z => z.id !== c.id); S.cariEdit = null; S.cari.sel = null; toast(c.name + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }

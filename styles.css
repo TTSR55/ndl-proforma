@@ -138,6 +138,11 @@ input[type=checkbox] { width: 17px; height: 17px; accent-color: var(--blue); pad
 .ico-in .sfx { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; pointer-events: none; }
 .ico-in.money input { padding-right: 30px; text-align: right; }
 .with-btn { display: flex; gap: 8px; }
+.sysno { height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 7px; background: var(--sunk); color: var(--muted); font-size: 13.5px; }
+.sysno svg { width: 15px; height: 15px; color: var(--muted); }
+.sysno b { color: var(--ink); font-weight: 700; letter-spacing: .01em; }
+.cari-quotes { border-top: 1px solid var(--line); margin-top: 22px; }
+.cari-quotes .tbl-wrap { margin: 0; padding: 0; }
 .with-btn input { flex: 1; }
 /* iOS tarzı bölümlü seçici */
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; background: var(--sunk); border-radius: 9px; padding: 3px; height: 42px; }
