@@ -37,6 +37,8 @@ create table if not exists public.profiles (
   decided_by uuid
 );
 alter table public.profiles enable row level security;
+-- yönetici geçici şifre verdiğinde true: kullanıcı ilk girişte yeni şifre belirlemeden devam edemez
+alter table public.profiles add column if not exists must_change boolean not null default false;
 
 -- 3) Yardımcı fonksiyonlar (security definer: profilleri kuralların dışında okur; arama yolu boş) -------
 create or replace function public.is_active() returns boolean
@@ -66,6 +68,18 @@ begin
 end $$;
 drop trigger if exists ndl_on_auth_user_email on auth.users;
 create trigger ndl_on_auth_user_email after update of email on auth.users for each row execute function public.handle_user_email();
+
+-- kullanıcı şifresini değiştirince "geçici şifre" bayrağı kalkar
+create or replace function public.handle_password_change() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if new.encrypted_password is distinct from old.encrypted_password then
+    update public.profiles set must_change = false where id = new.id;
+  end if;
+  return new;
+end $$;
+drop trigger if exists ndl_on_auth_password on auth.users;
+create trigger ndl_on_auth_password after update of encrypted_password on auth.users for each row execute function public.handle_password_change();
 
 -- Mevcut hesaplar için profil (onay bekliyor olarak)
 insert into public.profiles (id, email, created_at) select id, email, created_at from auth.users on conflict (id) do nothing;
@@ -135,12 +149,14 @@ select extract(year from (now() at time zone 'Europe/Istanbul'))::int,
 on conflict (year) do update set last = greatest(public.quote_counters.last, excluded.last);
 
 -- 7) Yönetici işlemleri (yalnızca aktif yönetici çalıştırabilir; kendi hesabına uygulanamaz) --------------
+--    Şifreler yalnızca tek yönlü özet (bcrypt) olarak saklanır; hiç kimse, yönetici de, bir şifreyi göremez.
+drop function if exists public.admin_list_users();
 create or replace function public.admin_list_users()
 returns table (id uuid, email text, role text, status text, created_at timestamptz, last_sign_in_at timestamptz,
-               email_confirmed_at timestamptz, decided_at timestamptz, doc_count bigint)
+               email_confirmed_at timestamptz, decided_at timestamptz, doc_count bigint, must_change boolean)
 language sql stable security definer set search_path = '' as $$
   select p.id, p.email, p.role, p.status, p.created_at, u.last_sign_in_at, u.email_confirmed_at, p.decided_at,
-         (select count(*) from public.docs d where d.user_id = p.id)
+         (select count(*) from public.docs d where d.user_id = p.id), p.must_change
     from public.profiles p left join auth.users u on u.id = p.id
    where public.is_admin()
    order by (p.status = 'pending') desc, p.created_at desc;
@@ -167,6 +183,42 @@ begin
   if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
 end $$;
 
+-- geçici şifre: kurallara uymalı; kullanıcının açık oturumları kapatılır ve ilk girişte yeni şifre ister
+create or replace function public.admin_set_password(target uuid, new_password text) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_admin() then raise exception 'not_admin' using errcode = '42501'; end if;
+  if target = auth.uid() then raise exception 'cannot_change_self' using errcode = '42501'; end if;
+  if char_length(new_password) < 10 or char_length(new_password) > 72 or new_password !~ '[a-z]' or new_password !~ '[A-Z]' or new_password !~ '[0-9]' then
+    raise exception 'weak_password' using errcode = '22023'; end if;
+  update auth.users set encrypted_password = extensions.crypt(new_password, extensions.gen_salt('bf')), updated_at = now() where id = target;
+  if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
+  update public.profiles set must_change = true where id = target;
+  delete from auth.sessions where user_id = target;
+end $$;
+
+-- 8) Duyurular: yönetici yazar, tüm aktif kullanıcılar görür ------------------------------------------
+create table if not exists public.announcements (
+  id         bigint      generated always as identity primary key,
+  title      text        not null check (char_length(title) between 1 and 120),
+  body       text        not null default '' check (char_length(body) <= 2000),
+  level      text        not null default 'info' check (level in ('info', 'warning', 'important')),
+  active     boolean     not null default true,
+  created_at timestamptz not null default now(),
+  created_by uuid        default auth.uid()
+);
+alter table public.announcements enable row level security;
+drop policy if exists "ann_read" on public.announcements;
+drop policy if exists "ann_admin_insert" on public.announcements;
+drop policy if exists "ann_admin_update" on public.announcements;
+drop policy if exists "ann_admin_delete" on public.announcements;
+create policy "ann_read" on public.announcements for select to authenticated using ((select public.is_active()) and (active or (select public.is_admin())));
+create policy "ann_admin_insert" on public.announcements for insert to authenticated with check ((select public.is_admin()));
+create policy "ann_admin_update" on public.announcements for update to authenticated using ((select public.is_admin())) with check ((select public.is_admin()));
+create policy "ann_admin_delete" on public.announcements for delete to authenticated using ((select public.is_admin()));
+revoke all on public.announcements from anon, authenticated;
+grant select, insert, update, delete on public.announcements to authenticated;
+
 revoke all on function public.is_active() from public, anon;
 revoke all on function public.is_admin() from public, anon;
 revoke all on function public.handle_new_user() from public, anon, authenticated;
@@ -174,8 +226,11 @@ revoke all on function public.handle_user_email() from public, anon, authenticat
 revoke all on function public.admin_list_users() from public, anon;
 revoke all on function public.admin_set_status(uuid, text) from public, anon;
 revoke all on function public.admin_delete_user(uuid) from public, anon;
+revoke all on function public.admin_set_password(uuid, text) from public, anon;
+revoke all on function public.handle_password_change() from public, anon, authenticated;
 grant execute on function public.is_active() to authenticated;
 grant execute on function public.is_admin() to authenticated;
 grant execute on function public.admin_list_users() to authenticated;
 grant execute on function public.admin_set_status(uuid, text) to authenticated;
 grant execute on function public.admin_delete_user(uuid) to authenticated;
+grant execute on function public.admin_set_password(uuid, text) to authenticated;

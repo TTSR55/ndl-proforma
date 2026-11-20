@@ -4,7 +4,7 @@
 const $ = id => document.getElementById(id);
 const root = $("root");
 let Store = null;
-Object.assign(S, {qCari: "", role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: ""}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}});
+Object.assign(S, {ann: [], annEdit: {title: "", body: "", level: "info"}, keepQ: false, qCari: "", role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: ""}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}});
 const RECOVERY = /type=recovery/.test(location.hash + location.search);
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
@@ -37,6 +37,9 @@ const ICON = {
   list: I('<path d="M8 6h12M8 12h12M8 18h12M4 6h.5M4 12h.5M4 18h.5"/>'),
   mail: I('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>'),
   lock: I('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
+  pano: I('<rect x="3.5" y="3.5" width="7" height="9" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="5" rx="1.5"/><rect x="13.5" y="11.5" width="7" height="9" rx="1.5"/><rect x="3.5" y="15.5" width="7" height="5" rx="1.5"/>'),
+  bell: I('<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'),
+  key: I('<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L20 3M16 7l2.5 2.5M14 9l2 2"/>'),
   shield: I('<path d="M12 3l7.5 3v6c0 4.5-3.2 7.7-7.5 9-4.3-1.3-7.5-4.5-7.5-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>')
 };
 const kv = (k, v, cls = "") => `<div class="kv"><span>${esc(k)}</span><b class="${cls}">${v}</b></div>`;
@@ -100,7 +103,9 @@ async function enter(u) {
   try { prof = await Store.profile(); }
   catch (e) { S.entering = false; if (isMissingTable(e)) renderSetupNeeded(); else renderFatal("Hesap bilgileriniz okunamadı: " + authError(e), true); return; }
   if (!prof || prof.status !== "active") { S.entering = false; renderGate(prof); return; }
+  if (prof.must_change) { S.entering = false; renderForcePw(); return; }
   S.role = prof.role === "admin" ? "admin" : "user";
+  try { S.ann = await Store.listAnn(); } catch (e) { S.ann = []; }
   try {
     ingest(await Store.loadAll());
     if (!S.products.length && !S.settings.seeded) await seedCatalog();
@@ -112,6 +117,7 @@ async function enter(u) {
   S.entering = false;
   let d = loadDraft();
   if (d && !d.q.saved && !d.q.buyer.trim() && !d.q.items.length) d = null;   /* boş taslak saklanmaz; yeni, boş proformayla başlanır */
+  if (d && d.q.saved && !d.q.dirty) d = null;                                 /* kayıtlı proforma girişte açık gelmez; yeni proforma cari seçimiyle başlar */
   if (d) { S.q = d.q; S.step = d.step; S.cfg = d.cfg; if (S.cfg.edit != null && !S.q.items[S.cfg.edit]) S.cfg.edit = null; }
   else { S.q = newQuote(); S.step = 1; S.cfg = newCfg(); }
   /* taslakların numarası olmaz; kayıtlı bir taslak ise numarayı ve durumu sunucudaki kayıttan al */
@@ -122,6 +128,15 @@ async function enter(u) {
   if (S.role === "admin") loadUsers(true);
 }
 /* onay bekleyen ya da dondurulmuş hesap: veriye erişim yok, yalnızca durum ekranı */
+/* yönetici geçici şifre verdiyse: yeni şifre belirlemeden devam edilmez */
+function renderForcePw() {
+  root.innerHTML = `<div class="auth-main" style="min-height:100%"><div class="auth-card"><div><div class="eyebrow soft">${esc(S.user ? S.user.email : "")}</div><h1>Yeni şifrenizi belirleyin</h1></div>
+    <p class="lead">Hesabınıza yönetici tarafından geçici bir şifre verildi. Devam etmek için yalnızca sizin bildiğiniz yeni bir şifre belirleyin.</p>
+    <form class="auth-form" data-form="forcepw" novalidate>${pwField("f_pw", "password", "Yeni şifre", "new-password", "", true)}${pwField("f_pw2", "password2", "Yeni şifre (tekrar)", "new-password")}
+    <div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">Şifreyi kaydet ve devam et</button></form>
+    <button class="link" data-act="logout">Çıkış yap</button></div></div>`;
+  const f = $("f_pw"); if (f) f.focus();
+}
 function renderGate(prof) {
   const st = prof ? prof.status : "pending", susp = st === "suspended";
   root.innerHTML = `<div class="auth-main" style="min-height:100%"><div class="auth-card"><div class="sent"><span class="bubble${susp ? " red" : ""}">${susp ? ICON.lock : ICON.shield}</span>
@@ -222,7 +237,7 @@ function authBody(m) {
 }
 
 /* ---------- uygulama çerçevesi ---------- */
-const NAV = [["proforma", "Proforma", "doc"], ["proformalar", "Kayıtlar", "stack"], ["alicilar", "Cari", "users"], ["urunler", "Ürünler", "cube"], ["firma", "Firma", "firm"]];
+const NAV = [["pano", "Pano", "pano"], ["proforma", "Proforma", "doc"], ["proformalar", "Kayıtlar", "stack"], ["alicilar", "Cari", "users"], ["urunler", "Ürünler", "cube"], ["firma", "Firma", "firm"]];
 function renderShell() {
   root.innerHTML = `<div class="app"><header class="top" id="top"></header><nav class="side" id="side" aria-label="Menü"></nav><main class="main" id="main"></main></div>`;
   renderTop(); renderSide();
@@ -237,7 +252,7 @@ function renderTop() {
      <button class="round" data-act="theme" title="${isDark() ? "Açık tema" : "Koyu tema"}" aria-label="Temayı değiştir">${isDark() ? ICON.sun : ICON.moon}</button>
      <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü">${esc(initials())}</button>
        ${S.menu === "user" ? `<div class="pop" role="menu"><div class="who"><b>${esc(S.user.email)}</b><span>${Store.mode === "demo" ? "Demo hesabı · bu tarayıcıda" : "Kayıtlarınız yalnızca bu hesapta"}</span></div>
-         <a href="#firma" role="menuitem">${ICON.firm} Firma ve hesap</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
+         <a href="#pano" role="menuitem">${ICON.key} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firma bilgileri</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
          <button class="danger" data-act="logout" role="menuitem">${ICON.out} Çıkış yap</button></div>` : ""}</div>
    </div>`;
 }
@@ -256,7 +271,7 @@ function keepFocus(el, fn) {
 }
 function renderMain() {
   const m = $("main"); if (!m) return;
-  keepFocus(m, () => { m.innerHTML = S.view === "proformalar" ? pageQuotes() : S.view === "alicilar" ? pageCari() : S.view === "yonetim" ? pageAdmin() : S.view === "urunler" ? pageLib() : S.view === "firma" ? pageFirm() : pageProforma(); });
+  keepFocus(m, () => { m.innerHTML = (S.view === "pano" ? pagePano() : S.view === "proformalar" ? pageQuotes() : S.view === "alicilar" ? pageCari() : S.view === "yonetim" ? pageAdmin() : S.view === "urunler" ? pageLib() : S.view === "firma" ? pageFirm() : pageProforma()).replace('<div class="page">', '<div class="page">' + annBar()); });
   paperRO.disconnect(); const p = $("paper"); if (p) paperRO.observe(p); fitPaper();
   if (S.flash != null) { const f = S.flash; setTimeout(() => { if (S.flash === f) S.flash = null; }, 1700); }
 }
@@ -276,14 +291,14 @@ function pageProforma() {
 }
 function introHtml() {
   const q = S.q, st = settings();
-  const hasCari = !!q.customerId || (q.saved && !!q.buyer.trim());
+  const hasCari = cariChosen(q), locked = k => k > 1 && !hasCari && !q.sample;
   const steps = [[1, "Cari Kart", hasCari ? q.buyer : "Seçilmedi"], [2, "Ürün Ekle", q.items.length ? q.items.length + " kalem" : "Kalem yok"], [3, "Önizle ve Oluştur", q.saved ? (q.dirty ? "Kaydedilmemiş değişiklik" : "Kaydedildi") : "Taslak"]];
   const done = k => ({1: hasCari, 2: q.items.length > 0, 3: q.saved && !q.dirty})[k];
   return `<div class="eyebrow">${esc(hasCari ? q.buyer : "Cari kart seçilmedi")}</div><h1>${q.saved ? "Proforma Düzenle" : "Proforma Oluştur"}</h1>
    <p class="lead">Cari kartı seçin, lifti yapılandırıp proformaya ekleyin, önizleyip oluşturun.</p><hr>
    <dl class="meta"><div><dt>Proforma no</dt><dd class="num">${q.no ? esc(q.no) : `<span class="muted" style="font-weight:500">oluşturulunca verilir</span>`}</dd></div><div><dt>Tarih</dt><dd>${fmtDate(q.date)}</dd></div><div><dt>Durum</dt><dd>${statusTag(q)}</dd></div>
      <div><dt>Toplam (${q.currency})</dt><dd class="amount">${money(qTotal(q), q.currency)}</dd></div></dl>
-   <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
+   <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}${locked(k) ? " locked" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}${locked(k) ? ' aria-disabled="true" title="Önce cari kart seçin"' : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
    ${!st.company ? `<div class="note-card"><b>Firma bilgileriniz eksik</b>Proformanın üst ve alt kısmındaki firma ve banka bilgilerini bir kez girmeniz yeterli.<a class="link" href="#firma">Firma bilgilerini gir ${ICON.right}</a></div>` : ""}`;
 }
 function refreshIntro() { const el = $("intro"); if (el) el.innerHTML = introHtml(); }
@@ -520,6 +535,77 @@ function pageQuotes() {
       : `<div class="empty">${S.quotes.length ? "Filtreyle eşleşen proforma yok." : `Henüz kayıtlı proforma yok.<br>Proforma sayfasında <b>Proformayı Oluştur</b> dediğinizde burada listelenir.`}${S.quotes.length ? "" : `<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn blue" data-act="go" data-v="proforma">${ICON.plus} Proforma oluştur</button><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>`}</div>`}</section></div>`;
 }
 
+/* ---------- duyurular ---------- */
+const annOffKey = () => "ndl-ann-off:" + (S.user ? S.user.id : "");
+const annOff = () => { try { return JSON.parse(lsGet(annOffKey()) || "[]"); } catch (e) { return []; } };
+const ANN_LEVEL = {info: ["blue", "Bilgi"], warning: ["amber", "Uyarı"], important: ["red", "Önemli"]};
+function annBar() {
+  const off = annOff(), list = (S.ann || []).filter(a => a.active && !off.includes(a.id)).slice(0, 3);
+  if (!list.length) return "";
+  return `<div class="ann-wrap">${list.map(a => `<div class="ann ${esc(a.level)}" role="status"><span class="ann-ic">${ICON.bell}</span><div class="ann-tx"><b>${esc(a.title)}</b>${a.body ? `<span>${esc(a.body)}</span>` : ""}</div><span class="ann-d">${fmtTs(a.created_at).slice(0, 10)}</span><button class="ibtn" data-act="ann-dismiss" data-id="${esc(a.id)}" title="Kapat" aria-label="Duyuruyu kapat">${ICON.x}</button></div>`).join("")}</div>`;
+}
+async function refreshAnn() { if (!S.user || !Store) return; try { S.ann = await Store.listAnn(); if ($("main")) renderMain(); } catch (e) {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.user && $("main")) refreshAnn(); });
+
+/* ---------- PANO sayfası ---------- */
+const monthKey = d => String(d || "").slice(0, 7);
+function sumByCur(list) { const by = {}; list.forEach(x => { const c = CUR[x.currency] ? x.currency : "USD"; by[c] = (by[c] || 0) + (Number(x.total) || 0); }); return by; }
+const byCurText = by => Object.entries(by).filter(([, v]) => v).map(([c, v]) => money(v, c)).join(" · ");
+function pagePano() {
+  const qs = S.quotes.filter(x => DATE_RE.test(String(x.date))), now = new Date(), z = n => String(n).padStart(2, "0");
+  const ym = now.getFullYear() + "-" + z(now.getMonth() + 1), month = qs.filter(x => monthKey(x.date) === ym), mBy = sumByCur(month);
+  const mMain = Object.entries(mBy).sort((a, b) => b[1] - a[1]);
+  const liftQty = S.quotes.reduce((a, x) => a + (x.items || []).filter(it => itemInfo(it).type === "LIFT").reduce((t, it) => t + (Number(it.qty) || 0), 0), 0);
+  const months = [];
+  for (let i = 5; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1), k = d.getFullYear() + "-" + z(d.getMonth() + 1), l = qs.filter(x => monthKey(x.date) === k); months.push({k, label: MONTHS[d.getMonth()].slice(0, 3), full: MONTHS[d.getMonth()] + " " + d.getFullYear(), n: l.length, by: sumByCur(l)}); }
+  const cariAgg = cariList().map(c => { const l = S.quotes.filter(x => x.customerId === c.id); return {c, n: l.length, by: sumByCur(l)}; }).filter(a => a.n).sort((a, b) => b.n - a.n).slice(0, 5);
+  const mAgg = {};
+  S.quotes.forEach(x => (x.items || []).forEach(it => { const inf = itemInfo(it); if (inf.type !== "LIFT") return; (mAgg[inf.code] = mAgg[inf.code] || {code: inf.code, name: inf.name, qty: 0}).qty += Number(it.qty) || 0; }));
+  const models = Object.values(mAgg).sort((a, b) => b.qty - a.qty).slice(0, 5), mMax = Math.max(1, ...models.map(m => m.qty));
+  const recent = [...S.quotes].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 5);
+  const kpi = (label, value, sub) => `<div class="kpi card"><span class="k-l">${label}</span><b class="k-v num">${value}</b><span class="k-s">${sub}</span></div>`;
+  const name = (S.user.email || "").split("@")[0];
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Pano</div><h1>Hoş geldiniz${name ? ", " + esc(name) : ""}</h1><p class="lead">Proformalarınızın özeti, en çok çalıştığınız cariler ve hesap ayarlarınız.</p></div>
+     <button class="btn blue" data-act="new">${ICON.plus} Yeni Proforma</button></div>
+   <div class="kpis">
+     ${kpi("Proforma", S.quotes.length, `bu ay <b>${month.length}</b>`)}
+     ${kpi("Bu ay teklif tutarı", mMain.length ? money(mMain[0][1], mMain[0][0]) : money(0, "USD"), mMain.length > 1 ? mMain.slice(1).map(([c, v]) => money(v, c)).join(" · ") : MONTHS[now.getMonth()] + " " + now.getFullYear())}
+     ${kpi("Cari kart", S.customers.length, `<b>${cariAgg.length ? S.customers.filter(c => S.quotes.some(x => x.customerId === c.id)).length : 0}</b> cariye proforma verildi`)}
+     ${kpi("Teklif edilen lift", fmtInt(liftQty), `${Object.keys(mAgg).length} farklı model`)}
+   </div>
+   <div class="dash">
+     <section class="card"><div class="card-h"><h2 class="ttl">Son 6 ay</h2><span class="muted small">aylık proforma sayısı</span></div>${monthChart(months)}</section>
+     <section class="card"><div class="card-h"><h2 class="ttl">En çok teklif edilen modeller</h2></div>
+       ${models.length ? `<ol class="rank">${models.map(m => `<li><span class="r-name"><b>${esc(m.code)}</b><span>${esc(m.name)}</span></span><span class="r-bar"><i style="width:${Math.max(4, Math.round(m.qty / mMax * 100))}%"></i></span><b class="r-val num">${fmtInt(m.qty)} adet</b></li>`).join("")}</ol>` : `<div class="empty">Henüz lift içeren proforma yok.</div>`}</section>
+   </div>
+   <div class="dash even">
+     <section class="card"><div class="card-h"><h2 class="ttl">Son proformalar</h2><div class="acts"><a class="btn ghost sm" href="#proformalar">Tümü ${ICON.right}</a></div></div>
+       ${recent.length ? `<div class="tbl-wrap"><table class="tbl"><tbody>${recent.map(x => `<tr class="row"><td class="code num">${esc(x.no || "—")}</td><td><b>${esc(x.buyer || "—")}</b><span class="sub">${fmtDate(x.date)}</span></td><td class="r strong">${money(x.total, x.currency)}</td><td><div class="acts"><button class="btn sm" data-act="q-edit" data-id="${esc(x.id)}">${ICON.edit} Düzenle</button></div></td></tr>`).join("")}</tbody></table></div>`
+         : `<div class="empty">Henüz proforma yok.<div><button class="btn blue" data-act="new">${ICON.plus} İlk proformayı oluştur</button></div></div>`}</section>
+     <section class="card"><div class="card-h"><h2 class="ttl">En çok çalışılan cariler</h2><div class="acts"><a class="btn ghost sm" href="#alicilar">Cari kartlar ${ICON.right}</a></div></div>
+       ${cariAgg.length ? `<div class="tbl-wrap"><table class="tbl"><tbody>${cariAgg.map(a => `<tr class="row clk" data-act="cari-open" data-id="${esc(a.c.id)}"><td class="code num">${esc(a.c.code)}</td><td><b>${esc(a.c.name)}</b><span class="sub">${a.n} proforma</span></td><td class="r strong">${byCurText(a.by) || "—"}</td></tr>`).join("")}</tbody></table></div>`
+         : `<div class="empty">Henüz bir cariye proforma verilmedi.</div>`}</section>
+   </div>
+   ${accountCard()}</div>`;
+}
+/* tek seri sütun grafik: ölçek 0'dan, yatay ızgara, son ay etiketli, diğerleri üzerine gelince */
+function monthChart(months) {
+  const total = months.reduce((a, m) => a + m.n, 0);
+  if (!total) return `<div class="empty">Son 6 ayda proforma yok. Oluşturdukça burada aylık dağılım görünür.</div>`;
+  const max = Math.max(...months.map(m => m.n)), top = max <= 4 ? 4 : Math.ceil(max / 4) * 4, ticks = [top, top / 2, 0];
+  return `<div class="mchart" role="img" aria-label="Son 6 ayın aylık proforma sayısı">
+    <div class="mc-grid">${ticks.map(t => `<div class="mc-line" style="bottom:${t / top * 100}%"><span>${fmtInt(t)}</span></div>`).join("")}</div>
+    <div class="mc-bars">${months.map((m, i) => { const last = i === months.length - 1; return `<div class="mc-col" tabindex="0"><div class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%">${last && m.n ? `<em class="num">${m.n}</em>` : ""}</div>
+      <div class="mc-tip" role="tooltip"><b>${esc(m.full)}</b><span>${m.n} proforma</span>${m.n ? `<span>${byCurText(m.by)}</span>` : ""}</div><span class="mc-x">${esc(m.label)}</span></div>`; }).join("")}</div></div>
+    <table class="sr-only"><caption>Aylık proforma sayısı</caption><tr><th>Ay</th><th>Proforma</th><th>Tutar</th></tr>${months.map(m => `<tr><td>${esc(m.full)}</td><td>${m.n}</td><td>${byCurText(m.by) || "—"}</td></tr>`).join("")}</table>`;
+}
+function accountCard() {
+  return `<section class="card" id="hesap"><div class="card-h"><h2 class="ttl">Hesap Ayarları</h2><span class="tag ${S.role === "admin" ? "blue" : "green"}">${S.role === "admin" ? "Yönetici" : "Kullanıcı"}</span>${Store.mode === "demo" ? `<span class="tag amber">Demo · bu tarayıcıda</span>` : ""}</div>
+    <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div class="sysno"><b>${esc(S.user.email)}</b></div></div><div class="fld s2"><span class="lbl">Firma bilgileri</span><a class="btn" href="#firma" style="justify-self:start">${ICON.firm} Firma ve banka bilgilerini düzenle</a></div></div>
+    <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
+     <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn danger" type="button" data-act="logout">${ICON.out} Çıkış yap</button><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section>`;
+}
+
 /* ---------- CARİ KARTLAR sayfası ---------- */
 function cariStats(c) {
   const qs = S.quotes.filter(x => x.customerId ? x.customerId === c.id : slug(x.buyer) === slug(c.name)), by = {};
@@ -573,16 +659,48 @@ function pageAdmin() {
       : (u.status === "pending" ? `<button class="btn green sm" data-act="adm-approve" data-id="${esc(u.id)}">${ICON.check} Onayla</button>` : "")
       + (u.status === "active" ? `<button class="btn amber sm" data-act="adm-freeze" data-id="${esc(u.id)}">${ICON.lock} Dondur</button>` : "")
       + (u.status === "suspended" ? `<button class="btn blue sm" data-act="adm-unfreeze" data-id="${esc(u.id)}">${ICON.check} Aktif et</button>` : "")
+      + `<button class="btn sm" data-act="adm-pw" data-id="${esc(u.id)}">${ICON.key} Şifre</button>`
       + `<button class="ibtn danger" data-act="adm-delete" data-id="${esc(u.id)}" title="Hesabı sil" aria-label="Hesabı sil">${ICON.trash}</button>`;
     return `<tr class="row${u.status === "pending" ? " promo" : ""}"><td><b>${esc(u.email || "—")}</b>${me ? ` <span class="tag blue">Siz</span>` : ""}<span class="sub">${u.role === "admin" ? "Yönetici" : "Kullanıcı"}</span></td>
-      <td><span class="tag ${cls}">${lbl}</span></td><td class="num">${fmtTs(u.created_at)}</td><td class="num">${fmtTs(u.last_sign_in_at)}</td>
+      <td><span class="tag ${cls}">${lbl}</span>${u.must_change ? ` <span class="tag grey">Geçici şifre</span>` : ""}</td><td class="num">${fmtTs(u.created_at)}</td><td class="num">${fmtTs(u.last_sign_in_at)}</td>
       <td>${u.email_confirmed_at ? `<span class="tag green">Onaylı</span>` : `<span class="tag amber">Bekliyor</span>`}</td><td class="c">${esc(u.doc_count ?? 0)}</td><td><div class="acts">${acts}</div></td></tr>`; }).join("");
   return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Yönetim</div><h1>Kullanıcılar</h1><p class="lead">Yeni kayıtlar sizin onayınızı bekler; onaylanmayan hesap hiçbir veriye erişemez. Dondurulan hesap giriş yapamaz. Silinen hesabın tüm kayıtları da silinir.</p></div>
      <button class="btn" data-act="adm-refresh">${ICON.list} Yenile</button></div>
    <div class="toolbar"><section class="card"><div class="seg" role="group" aria-label="Duruma göre filtrele" style="width:100%">${[["", "Tümü", all.length], ["pending", "Onay bekleyen", cnt("pending")], ["active", "Aktif", cnt("active")], ["suspended", "Dondurulan", cnt("suspended")]].map(([k, l, n]) => `<button data-act="adm-filter" data-f="${k}" aria-pressed="${f === k}">${l} <span class="muted">${n}</span></button>`).join("")}</div></section>
     <section class="card"><dl class="sumbox"><div><dt>Onay bekleyen</dt><dd class="${cnt("pending") ? "red" : ""}">${cnt("pending")}</dd></div><div><dt>Aktif</dt><dd class="green">${cnt("active")}</dd></div><div><dt>Dondurulan</dt><dd>${cnt("suspended")}</dd></div></dl></section></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Hesaplar</h2><span class="muted small">${list.length} / ${all.length}</span></div>
-    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>E-posta</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section></div>`;
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>E-posta</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section>
+   ${annAdmin()}</div>`;
+}
+
+function annAdmin() {
+  const A = S.annEdit, list = S.ann || [];
+  const rows = list.map(a => { const [cls, lbl] = ANN_LEVEL[a.level] || ANN_LEVEL.info;
+    return `<tr class="row"><td><b>${esc(a.title)}</b>${a.body ? `<span class="sub">${esc(a.body)}</span>` : ""}</td><td><span class="tag ${cls}">${lbl}</span></td><td class="num">${fmtTs(a.created_at)}</td><td>${a.active ? `<span class="tag green">Yayında</span>` : `<span class="tag grey">Kaldırıldı</span>`}</td>
+      <td><div class="acts"><button class="btn sm" data-act="ann-toggle" data-id="${esc(a.id)}">${a.active ? "Yayından kaldır" : "Yeniden yayınla"}</button><button class="ibtn danger" data-act="ann-del" data-id="${esc(a.id)}" title="Sil" aria-label="Duyuruyu sil">${ICON.trash}</button></div></td></tr>`; }).join("");
+  return `<section class="card" id="duyurular"><div class="card-h"><h2 class="ttl">Duyurular</h2><span class="muted small">${list.filter(a => a.active).length} yayında</span></div>
+    <div class="fgrid"><div class="fld s3"><label for="an_title">Başlık</label><input id="an_title" data-an="title" maxlength="120" value="${esc(A.title)}" placeholder="Örn. Yeni fiyat listesi 1 Aralık'ta geçerli"></div>
+      <div class="fld"><label for="an_level">Önem</label><select id="an_level" data-an="level">${Object.entries(ANN_LEVEL).map(([k, [, l]]) => opt(k, A.level, l)).join("")}</select></div>
+      <div class="fld s4"><label for="an_body">Metin <em>isteğe bağlı</em></label><textarea id="an_body" data-an="body" rows="2" maxlength="2000">${esc(A.body)}</textarea></div></div>
+    <div class="card-f"><div class="grow muted small">Yayınlanan duyuru tüm aktif kullanıcıların sayfasının en üstünde görünür. Kullanıcı kapatabilir; kapattığı duyuru ona tekrar gösterilmez.</div><div class="btns"><button class="btn blue" data-act="ann-publish">${ICON.bell} Yayınla</button></div></div>
+    ${list.length ? `<div class="tbl-wrap" style="margin-top:18px"><table class="tbl"><thead><tr><th>Duyuru</th><th>Önem</th><th>Tarih</th><th>Durum</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}</section>`;
+}
+/* şifre paneli: şifreler görülemez; sıfırlama e-postası ya da ilk girişte değiştirilecek geçici şifre */
+function openPwModal(u) {
+  const c = $("confirm"); S.confirm = null;
+  c.innerHTML = `<div class="confirm wide" role="dialog" aria-modal="true" aria-labelledby="pwT"><h3 id="pwT">Şifre · ${esc(u.email)}</h3>
+    <p>Şifreler yalnızca tek yönlü özet olarak saklanır; hiç kimse, yönetici de, bir kullanıcının şifresini göremez. Aşağıdaki iki yoldan birini kullanın.</p>
+    <div class="pw-opt"><div><b>Sıfırlama e-postası gönder</b><span>Kullanıcı e-postasındaki bağlantıyla kendi şifresini belirler. Önerilen yol.</span></div><button class="btn" data-act="adm-resetmail" data-id="${esc(u.id)}">${ICON.mail} Gönder</button></div>
+    <form class="pw-opt col" data-form="adminpw" data-id="${esc(u.id)}" novalidate><div><b>Geçici şifre belirle</b><span>Kullanıcının açık oturumları kapanır; ilk girişinde yeni şifre belirlemesi istenir. Geçici şifreyi kullanıcıya güvenli bir yoldan iletin.</span></div>
+      <div class="fld"><label for="ap_pw">Geçici şifre</label><div class="with-btn"><input id="ap_pw" name="password" type="text" autocomplete="off" spellcheck="false" maxlength="72" class="mono"><button type="button" class="btn" data-act="pw-gen">Oluştur</button></div>${pwChecklist("ap_pw")}</div>
+      <div class="form-err" role="alert"></div><div class="row"><button type="button" class="btn" data-act="cf-no">Vazgeç</button><button type="submit" class="btn blue">${ICON.key} Geçici şifreyi kaydet</button></div></form></div>`;
+  c.hidden = false;
+}
+function genPassword() {
+  const sets = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789"], all = sets.join(""), r = new Uint32Array(16); crypto.getRandomValues(r);
+  const ch = [...r].map((v, i) => (i < 3 ? sets[i] : all)[v % (i < 3 ? sets[i] : all).length]);
+  for (let i = ch.length - 1; i > 0; i--) { const j = r[i] % (i + 1); [ch[i], ch[j]] = [ch[j], ch[i]]; }
+  return ch.join("");
 }
 
 /* ---------- ÜRÜNLER sayfası ---------- */
@@ -618,7 +736,7 @@ function libEditor(e) {
 function pageFirm() {
   if (!S.firm) S.firm = Object.assign({}, settings());
   const F = S.firm, f = (k, label, cls = "", attrs = "") => `<div class="fld ${cls}"><label for="s_${k}">${label}</label><input id="s_${k}" data-fe="${k}" value="${esc(F[k] || "")}"${attrs}></div>`;
-  return `<div class="page"><div><div class="eyebrow soft">Ayarlar</div><h1>Firma ve Hesap</h1><p class="lead">Bu bilgiler proformanın üst ve alt kısmında görünür ve yalnızca sizin hesabınızda saklanır. IBAN, proformanın para birimine göre seçilir.</p></div>
+  return `<div class="page"><div><div class="eyebrow soft">Ayarlar</div><h1>Firma Bilgileri</h1><p class="lead">Bu bilgiler proformanın üst ve alt kısmında görünür ve yalnızca sizin hesabınızda saklanır. IBAN, proformanın para birimine göre seçilir.</p></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Firma Bilgileri</h2></div><div class="fgrid">
      ${f("company", "Firma unvanı", "s2", ' placeholder="Firma unvanı" autocomplete="organization"')}${f("contact", "Telefon ve e-posta satırı", "s2", ' placeholder="Tel: … Email: …"')}${f("address", "Adres", "s4")}</div>
     <div class="card-h" style="margin-top:26px"><h2 class="ttl">Proforma</h2></div><div class="fgrid">
@@ -626,10 +744,7 @@ function pageFirm() {
     <div class="card-h" style="margin-top:26px"><h2 class="ttl">Banka Bilgileri</h2></div><div class="fgrid">
      ${f("beneficiary", "Lehtar (beneficiary)", "s2")}${f("bank", "Banka")}${f("branch", "Şube")}${f("ibanUSD", "USD IBAN", "s2", ' spellcheck="false"')}${f("ibanEUR", "EUR IBAN", "s2", ' spellcheck="false"')}${f("ibanTRY", "TRY IBAN", "s2", ' spellcheck="false"')}${f("swift", "SWIFT", "", ' spellcheck="false"')}</div>
     <div class="card-f"><div class="grow muted small">Değişiklikler yeni ve açık proformalara yansır.</div><div class="btns"><button class="btn ghost" data-act="firm-reset">Vazgeç</button><button class="btn blue" data-act="firm-save">${ICON.check} Kaydet</button></div></div></section>
-   <section class="card"><div class="card-h"><h2 class="ttl">Hesap</h2><span class="tag ${Store.mode === "demo" ? "amber" : "green"}">${Store.mode === "demo" ? "Demo · bu tarayıcıda" : "Güvenli hesap"}</span></div>
-    <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div style="height:42px;display:flex;align-items:center;font-weight:600">${esc(S.user.email)}</div></div></div>
-    <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
-     <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn danger" type="button" data-act="logout">${ICON.out} Çıkış yap</button><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section></div>`;
+</div>`;
 }
 
 /* ---------- onay penceresi ---------- */
@@ -643,8 +758,12 @@ function needsGuard() { const q = S.q; if (!q) return false; return !q.sample &&
 function guard(what, fn) { if (!needsGuard()) { fn(); return; } ask({title: "Kaydedilmemiş taslak", msg: `Açık proforma (<b>${esc(S.q.no || "taslak")}</b>) kaydedilmedi. ${what} bu taslak silinir.`, yes: "Devam et", fn}); }
 
 /* ---------- işlemler ---------- */
-function go(v) { if (location.hash !== "#" + v) location.hash = v; else { S.view = v; renderSide(); renderMain(); } }
-function setStep(n) { S.step = n; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0); }
+const cariChosen = q => !!q.customerId || (q.saved && !!String(q.buyer).trim());
+/* uygulama içi geçişler açık proformayı korur; menüden Proforma'ya gelince kayıtlı ve değişmemiş proforma yerine yenisi açılır */
+function go(v) { S.keepQ = true; if (location.hash !== "#" + v) location.hash = v; else { S.keepQ = false; S.view = v; renderSide(); renderMain(); } }
+function setStep(n) {
+  if (n > 1 && S.q && !cariChosen(S.q) && !S.q.sample) { if (S.step !== 1 || S.view !== "proforma") { S.step = 1; if (S.view !== "proforma") go("proforma"); else renderMain(); } toast("Önce bir cari kart seçin"); return; }
+  S.step = n; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0); }
 function startNew(prefill) {
   S.q = newQuote(); if (prefill) Object.assign(S.q, prefill);
   S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = prefill ? 2 : 1; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Yeni proforma açıldı · numara oluşturulunca verilir");
@@ -765,6 +884,7 @@ document.addEventListener("input", e => {
   if (d.ce) { if (S.cariEdit) S.cariEdit[d.ce] = t.value; if (d.ce === "name" && S.cariTried) t.classList.toggle("need", !t.value.trim()); return; }
   if (d.le) { S.lib.edit[d.le] = t.value; if (d.le === "type") renderMain(); return; }
   if (d.fe) { S.firm[d.fe] = t.value; return; }
+  if (d.an) { S.annEdit[d.an] = t.value; return; }
 });
 document.addEventListener("change", e => {
   const t = e.target, d = t.dataset, c = S.cfg;
@@ -788,11 +908,11 @@ document.addEventListener("submit", async e => {
   setErr("");
   if (["login", "signup", "reset"].includes(kind) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setErr("Geçerli bir e-posta adresi yazın.");
   if (kind === "login" && !pw) return setErr("Şifrenizi yazın.");
-  const newPw = ["signup", "recovery", "pwchange"].includes(kind);
+  const newPw = ["signup", "recovery", "pwchange", "forcepw", "adminpw"].includes(kind);
   if (newPw) {
     const miss = pwMissing(pw); if (miss.length) return setErr("Şifrede eksik: " + miss.join(", ") + ".");
     if (pw.length > 72) return setErr("Şifre en fazla 72 karakter olabilir.");
-    if (pw !== pw2) return setErr("Şifreler eşleşmiyor.");
+    if (kind !== "adminpw" && pw !== pw2) return setErr("Şifreler eşleşmiyor.");
     if (email && pw.toLowerCase().includes(email.split("@")[0].toLowerCase())) return setErr("Şifre e-posta adınızı içermemeli.");
   }
   busy(btn, true);
@@ -806,6 +926,8 @@ document.addEventListener("submit", async e => {
     else if (kind === "reset") { await Store.reset(email); S.authEmail = email; S.auth = "sent"; renderAuth(); }
     else if (kind === "recovery") { await Store.setPassword(pw); S.auth = "login"; toast("Şifreniz güncellendi"); history.replaceState(null, "", location.pathname + "#proforma"); const u = await Store.session(); if (u) await enter(u); else renderAuth(); }
     else if (kind === "pwchange") { await Store.setPassword(pw); f.reset(); toast("Şifreniz değiştirildi"); }
+    else if (kind === "forcepw") { await Store.setPassword(pw); toast("Yeni şifreniz kaydedildi"); const u = S.user; if (u) await enter(u); }
+    else if (kind === "adminpw") { const u = (S.admin.users || []).find(x => x.id === f.dataset.id); await Store.rpc("admin_set_password", {target: f.dataset.id, new_password: pw}); $("confirm").hidden = true; toast((u ? u.email : "Kullanıcı") + " için geçici şifre kaydedildi; ilk girişte değiştirmesi istenecek"); loadUsers(); }
   } catch (x) { setErr(authError(x)); }
   finally { busy(btn, false); }
 });
@@ -834,7 +956,7 @@ document.addEventListener("click", async e => {
     case "tpl-open": guard("Örnek şablon açılırsa", () => { S.q = templateQuote(); S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = 3; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Örnek şablon açıldı · bilgiler hayalidir"); }); break;
     case "tpl-clear": startNew(); break;
     case "undo": if (S.undo) { S.undo(); S.undo = null; $("toast").hidden = true; } break;
-    case "cf-no": S.confirm = null; renderConfirm(); break;
+    case "cf-no": S.confirm = null; renderConfirm(); $("confirm").hidden = true; break;
     case "cf-yes": { const fn = S.confirm && S.confirm.fn; S.confirm = null; renderConfirm(); if (fn) await fn(); break; }
     /* yapılandırıcı */
     case "mode": if (c.mode !== b.dataset.v) { S.cfg = newCfg(b.dataset.v); S.cfgTried = false; saveDraft(); renderMain(); } break;
@@ -892,7 +1014,18 @@ document.addEventListener("click", async e => {
         fn: async () => { try { await Store.del("customer", c.id); S.customers = S.customers.filter(z => z.id !== c.id); S.cariEdit = null; S.cari.sel = null; toast(c.name + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
     /* yönetim */
     case "gate-check": { const u = S.user; if (u) enter(u); break; }
-    case "adm-refresh": loadUsers(); break;
+    case "adm-refresh": loadUsers(); refreshAnn(); break;
+    case "adm-pw": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) openPwModal(u); break; }
+    case "adm-resetmail": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (!u) break; busy(b, true);
+      try { await Store.reset(u.email); $("confirm").hidden = true; toast(u.email + " adresine şifre sıfırlama bağlantısı gönderildi"); } catch (err) { toast(authError(err)); busy(b, false); } break; }
+    case "pw-gen": { const inp = $("ap_pw"); if (inp) { inp.value = genPassword(); inp.dispatchEvent(new Event("input", {bubbles: true})); inp.select(); } break; }
+    case "ann-dismiss": { const off = annOff(); off.push(isNaN(+b.dataset.id) ? b.dataset.id : +b.dataset.id); lsSet(annOffKey(), JSON.stringify(off.slice(-100))); renderMain(); break; }
+    case "ann-publish": { const A = S.annEdit; if (!A.title.trim()) { toast("Duyuru başlığı boş olamaz"); const t = $("an_title"); if (t) t.focus(); break; }
+      busy(b, true); try { await Store.addAnn({title: A.title.trim(), body: A.body.trim(), level: ANN_LEVEL[A.level] ? A.level : "info"}); S.annEdit = {title: "", body: "", level: "info"}; await refreshAnn(); toast("Duyuru yayınlandı"); } catch (err) { toast("Yayınlanamadı: " + authError(err)); busy(b, false); } break; }
+    case "ann-toggle": { const a = (S.ann || []).find(x => String(x.id) === b.dataset.id); if (!a) break; try { await Store.updAnn(a.id, {active: !a.active}); await refreshAnn(); toast(a.active ? "Duyuru yayından kaldırıldı" : "Duyuru yeniden yayında"); } catch (err) { toast(authError(err)); } break; }
+    case "ann-del": { const a = (S.ann || []).find(x => String(x.id) === b.dataset.id); if (!a) break;
+      ask({title: "Duyuru silinsin mi?", msg: `<b>${esc(a.title)}</b> kalıcı olarak silinir.`, yes: "Sil", danger: true, fn: async () => { try { await Store.delAnn(a.id); await refreshAnn(); toast("Duyuru silindi"); } catch (err) { toast(authError(err)); } }}); break; }
+    case "cari-open": { const c = cariById(b.dataset.id); if (!c) break; S.cari.sel = c.id; S.cariEdit = {...c}; go("alicilar"); break; }
     case "adm-filter": S.admin.filter = b.dataset.f; renderMain(); break;
     case "adm-approve": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) adminAction("admin_set_status", {target: u.id, new_status: "active"}, u.email + " onaylandı"); break; }
     case "adm-unfreeze": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) adminAction("admin_set_status", {target: u.id, new_status: "active"}, u.email + " yeniden aktif"); break; }
@@ -916,12 +1049,14 @@ document.addEventListener("click", async e => {
 });
 
 /* ---------- yönlendirme ---------- */
-const VIEWS = ["proforma", "proformalar", "alicilar", "urunler", "firma", "yonetim"];
+const VIEWS = ["pano", "proforma", "proformalar", "alicilar", "urunler", "firma", "yonetim"];
 function fromHash() {
   if (!S.user || !$("main")) return;
-  const h = location.hash.slice(1); S.view = VIEWS.includes(h) ? h : "proforma"; S.menu = null;
+  const prev = S.view, keep = S.keepQ; S.keepQ = false;
+  const h = location.hash.slice(1); S.view = VIEWS.includes(h) ? h : "pano"; S.menu = null;
+  if (S.view === "proforma" && prev !== "proforma" && !keep && S.q && S.q.saved && !S.q.dirty) { S.q = newQuote(); S.cfg = newCfg(); S.cfgTried = false; S.step = 1; S.openRows.clear(); S.pick = {search: "", mode: ""}; saveDraft(); updateCart(); }
   if (S.view !== "firma") S.firm = null;
-  if (S.view === "yonetim" && S.role !== "admin") S.view = "proforma";
+  if (S.view === "yonetim" && S.role !== "admin") S.view = "pano";
   if (S.view === "yonetim") loadUsers(true);
   if (S.view !== "alicilar" && S.view !== "proforma") { S.cariEdit = null; S.pick.mode = ""; }
   renderSide(); renderMain(); const m = $("main"); if (m) m.scrollTop = 0;

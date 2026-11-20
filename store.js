@@ -62,7 +62,12 @@ function supabaseStore() {
       }
     },
     async del(kind, id) { const {error} = await sb.from("docs").delete().eq("kind", kind).eq("id", id); if (error) throw error; },
-    async profile() { const {data, error} = await sb.from("profiles").select("id,email,role,status").eq("id", this.uid).maybeSingle(); if (error) throw error; return data; },
+    async profile() { const {data, error} = await sb.from("profiles").select("id,email,role,status,must_change").eq("id", this.uid).maybeSingle(); if (error) throw error; return data; },
+    /* duyurular: okuma tüm aktif kullanıcılara, yazma yalnızca yöneticiye (RLS) */
+    async listAnn() { const {data, error} = await sb.from("announcements").select("id,title,body,level,active,created_at").order("created_at", {ascending: false}).limit(50); if (error) throw error; return data || []; },
+    async addAnn(a) { const {error} = await sb.from("announcements").insert({title: a.title, body: a.body, level: a.level, active: true}); if (error) throw error; },
+    async updAnn(id, patch) { const {error} = await sb.from("announcements").update(patch).eq("id", id); if (error) throw error; },
+    async delAnn(id) { const {error} = await sb.from("announcements").delete().eq("id", id); if (error) throw error; },
     async rpc(fn, args) { const {data, error} = await sb.rpc(fn, args || {}); if (error) throw error; return data; }
   };
 }
@@ -97,7 +102,7 @@ function localStore() {
     },
     async signOut() { const d = load(); d.session = null; save(d); setTimeout(() => cb("SIGNED_OUT", null), 0); },
     async reset() { throw {code: "demo_reset"}; },
-    async setPassword(pw) { const d = load(), s = d.session; if (!s) return; const u = d.users[s.email]; u.salt = rid(); u.hash = await hash(pw, u.salt); save(d); },
+    async setPassword(pw) { const d = load(), s = d.session; if (!s) return; const u = d.users[s.email]; u.salt = rid(); u.hash = await hash(pw, u.salt); u.must_change = false; save(d); },
     async loadAll() { return Object.values(load().docs[this.uid] || {}); },
     async put(kind, id, data) {
       const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}, key = kind + "|" + id, old = m[key];
@@ -117,17 +122,22 @@ function localStore() {
       const d = load(), e = Object.keys(d.users).find(k => d.users[k].id === this.uid), u = e && d.users[e];
       if (!u) return null;
       if (!u.role) { u.role = Object.values(d.users).some(x => x.role === "admin") ? "user" : "admin"; u.status = u.role === "admin" ? "active" : "pending"; save(d); }
-      return {id: u.id, email: e, role: u.role, status: u.status};
+      return {id: u.id, email: e, role: u.role, status: u.status, must_change: !!u.must_change};
     },
+    async listAnn() { const d = load(), me = Object.values(d.users).find(u => u.id === this.uid), admin = me && me.role === "admin"; return (d.ann || []).filter(a => a.active || admin).sort((a, b) => b.id - a.id); },
+    async addAnn(a) { const d = load(); d.ann = d.ann || []; d.ann.push({id: Date.now(), title: a.title, body: a.body, level: a.level, active: true, created_at: new Date().toISOString()}); save(d); },
+    async updAnn(id, patch) { const d = load(), a = (d.ann || []).find(x => x.id === id); if (a) Object.assign(a, patch); save(d); },
+    async delAnn(id) { const d = load(); d.ann = (d.ann || []).filter(x => x.id !== id); save(d); },
     async rpc(fn, args) {
       const d = load(), me = Object.values(d.users).find(u => u.id === this.uid);
       if (!me || me.role !== "admin" || me.status !== "active") throw {message: "not_admin"};
       const entry = id => Object.entries(d.users).find(([, u]) => u.id === id);
-      if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length}))
+      if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length, must_change: !!u.must_change}))
         .sort((a, b) => (b.status === "pending") - (a.status === "pending") || String(b.created_at).localeCompare(String(a.created_at)));
       const hit = entry(args && args.target); if (!hit) throw {message: "no_user"};
       if (hit[1].id === this.uid) throw {message: "cannot_change_self"};
       if (fn === "admin_set_status") { if (!["active", "suspended"].includes(args.new_status)) throw {message: "bad_status"}; hit[1].status = args.new_status; hit[1].decided_at = new Date().toISOString(); save(d); return null; }
+      if (fn === "admin_set_password") { const pw = String(args.new_password || ""); if (pw.length < 10 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) throw {message: "weak_password"}; hit[1].salt = rid(); hit[1].hash = await hash(pw, hit[1].salt); hit[1].must_change = true; save(d); return null; }
       if (fn === "admin_delete_user") { delete d.users[hit[0]]; delete d.docs[hit[1].id]; save(d); return null; }
       throw {message: "unknown_function"};
     }

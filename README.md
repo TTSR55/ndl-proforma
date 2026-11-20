@@ -2,8 +2,11 @@
 
 NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar, cari kartlar, ürün kütüphanesi ve firma/banka bilgileri her hesaba özel tutulur.
 
+- **Pano:** menünün ilk sayfası. Proforma sayısı, bu ayki tutar, cari ve lift sayısı, son 6 ayın grafiği, en çok teklif verilen modeller, son proformalar ve en çok çalışılan cariler. Hesap ayarları (şifre değiştirme, çıkış) da buradadır.
+- **Duyurular:** yönetici *Yönetim* sayfasından duyuru yayınlar (bilgi / uyarı / önemli); tüm aktif kullanıcılar sayfanın en üstünde görür. Kullanıcı bir duyuruyu kapatabilir; yönetici duyuruyu yayından kaldırabilir ya da silebilir.
 - **Üyelik ve onay:** yeni kayıtlar yönetici onayını bekler; yönetici *Yönetim* sayfasından hesapları onaylar, dondurur ya da siler. İlk kaydolan hesap yönetici olur.
-- **Proforma:** cari kart seçimi → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
+- **Şifreler:** şifreler yalnızca tek yönlü özet (bcrypt) olarak saklanır; yönetici dahil hiç kimse bir şifreyi göremez. Yönetici, şifresini unutan kullanıcıya sıfırlama e-postası gönderebilir ya da geçici bir şifre verebilir. Geçici şifre verildiğinde kullanıcının açık oturumları kapanır ve ilk girişte kendi şifresini belirlemeden devam edemez.
+- **Proforma:** cari kart seçimi (zorunlu; yeni proforma boş başlar) → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
 - **Sistem numarası:** her proformaya oluşturulduğu anda veritabanı bir numara verir (ör. PI2026/0007). Numara şirket genelinde tektir, sırayla artar ve sonradan değiştirilemez; düzenlenen proforma numarasını korur.
 - **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
 - **Kayıtlar:** arama, cari kart, para birimi ve tarih filtresi; *Düzenle* ile değiştirme, *Tekrarla* ile yeni numaralı kopya. Her cari kartın altında o cariye ait proformalar listelenir.
@@ -43,7 +46,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
 | `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
 | `config.js` | Supabase bağlantı bilgileri |
-| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), onay ve yönetici fonksiyonları |
+| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), proforma numarası, onay, duyuru ve yönetici fonksiyonları |
 | `duelsan.jpg`, `ndl.jpg` | Proforma logoları |
 
 ## Yerelde çalıştırma
