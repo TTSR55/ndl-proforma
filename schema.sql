@@ -123,6 +123,11 @@ begin
     -- kayıtlı proformanın numarası değişmez
     if old.data ? 'sysNo' then
       new.data := jsonb_set(jsonb_set(new.data, '{sysNo}', old.data->'sysNo'), '{no}', old.data->'sysNo');
+    else
+      -- numara sistemi kurulmadan önceki kayıt: eski numarası da değişmez, sonradan sistem numarası eklenemez
+      -- (eklenebilseydi biri ileri bir numarayı önceden kapıp herkesin yeni proformasını kilitleyebilirdi)
+      new.data := new.data - 'sysNo' - 'no';
+      if old.data ? 'no' then new.data := jsonb_set(new.data, '{no}', old.data->'no'); end if;
     end if;
     return new;
   end if;
@@ -141,6 +146,19 @@ drop trigger if exists ndl_quote_no on public.docs;
 create trigger ndl_quote_no before insert or update on public.docs for each row when (new.kind = 'quote') execute function public.assign_quote_no();
 revoke all on function public.assign_quote_no() from public, anon, authenticated;
 create unique index if not exists docs_quote_sysno_uniq on public.docs ((data->>'sysNo')) where kind = 'quote' and data ? 'sysNo';
+-- bir kaydın sahibi, türü ve kimliği sonradan değiştirilemez. Aksi hâlde bir kaydı önce "cari" yazıp sonra
+-- "proforma"ya çevirerek numara kurallarını atlatmak mümkün olurdu. Uygulama bu alanları hiç değiştirmez.
+create or replace function public.docs_lock_keys() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if new.user_id is distinct from old.user_id or new.kind is distinct from old.kind or new.id is distinct from old.id then
+    raise exception 'docs_key_immutable' using errcode = '42501';
+  end if;
+  return new;
+end $$;
+drop trigger if exists ndl_docs_lock_keys on public.docs;
+create trigger ndl_docs_lock_keys before update on public.docs for each row execute function public.docs_lock_keys();
+revoke all on function public.docs_lock_keys() from public, anon, authenticated;
 
 -- sayaç, bu yıl kullanılmış en büyük numaradan devam eder
 insert into public.quote_counters (year, last)
