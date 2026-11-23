@@ -198,6 +198,30 @@ async function logoData(src) {
   const ar = await new Promise(res => { const im = new Image(); im.onload = () => res(im.naturalHeight ? im.naturalWidth / im.naturalHeight : 0); im.onerror = () => res(0); im.src = d; });
   return (LOGO_CACHE[src] = {d, ar});
 }
+/* PDF ve Excel için ürün ve opsiyon fotoğrafları: beyaz zemine küçültülmüş JPEG (data: URL) ve en/boy oranı.
+   Yüklenemeyen fotoğraf atlanır; proforma yine üretilir. */
+const PHOTO_CACHE = {};
+function photoData(src) {
+  if (!PHOTO_CACHE[src]) PHOTO_CACHE[src] = new Promise(res => {
+    const im = new Image();
+    im.onload = () => {
+      try {
+        const k = Math.min(1, 320 / Math.max(im.naturalWidth || 1, im.naturalHeight || 1)), w = Math.max(1, Math.round(im.naturalWidth * k)), h = Math.max(1, Math.round(im.naturalHeight * k));
+        const cv = document.createElement("canvas"); cv.width = w; cv.height = h; const x = cv.getContext("2d");
+        x.fillStyle = "#fff"; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+        res({d: cv.toDataURL("image/jpeg", 0.86), ar: w / h});
+      } catch (e) { res(null); }
+    };
+    im.onerror = () => res(null);
+    im.src = src;
+  }).then(r => { if (!r) delete PHOTO_CACHE[src]; return r; });
+  return PHOTO_CACHE[src];
+}
+async function loadPhotos(q) {
+  const out = {};
+  await Promise.all(photoSrcs(q).map(async s => { const r = await photoData(s); if (r) out[s] = r; }));
+  PHOTOS = out;
+}
 const coLogo = c => `<span class="co-logo">${c && c.logo ? `<img src="${esc(c.logo)}" alt="">` : `<b>${esc((coName(c) || "?").trim().charAt(0).toLocaleUpperCase("tr"))}</b>`}</span>`;
 const draftKey = () => "ndl-draft:" + (S.user ? S.user.id : "");
 function loadDraft() {
@@ -434,7 +458,7 @@ function cfgLift() {
      <figure class="plate" id="plate">${plateSvg(cfgSize(c), c.mat)}</figure></div></div>
    <div class="optbox"><div class="lbl">Opsiyonlar <em>${c.opts.length ? c.opts.length + " seçili · fiyatları birim fiyata eklenir" : "isteğe bağlı · her birinin fiyatı ayrıca girilir"}</em></div>
     <div class="chips">${optionProducts().map(op => { const on = c.opts.some(o => o.oid === op.id); return `<button class="chip" data-act="opt" data-id="${op.id}" aria-pressed="${on}"${dis}>${on ? ICON.check : ICON.plus}${esc(op.name)}</button>`; }).join("")}</div>
-    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${esc(optName(o))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
+    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${productImg(o.oid) ? `<img class="othumb" src="${esc(productImg(o.oid))}" alt="">` : ""}${esc(optName(o))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
    </div>`;
 }
 function cfgSpare() {
@@ -446,7 +470,7 @@ function cfgSpare() {
     <div class="fld"><label for="cqty">Adet</label>${qtyHtml()}</div>
     <div class="fld"><label for="cprice">Birim fiyat</label>${moneyIn("cprice", 'data-c="price"', c.price, S.cfgTried && !hasPrice(c.price))}</div>
     <div class="fld s2"><label for="c_note">Satır notu</label><select id="c_note" data-c="note">${NOTES.map(x => opt(x.v, c.note, x.l)).join("")}</select></div>
-    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center"><span class="tag blue">${esc(p.code)}</span><b>${esc(p.name)}</b></div></div>` : ""}
+    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center">${p.img ? `<img class="sthumb" src="${esc(p.img)}" alt="">` : ""}<span class="tag blue">${esc(p.code)}</span><b>${esc(p.name)}</b></div></div>` : ""}
    </div>`;
 }
 function cfgFootHtml() {
@@ -493,18 +517,18 @@ function itemsCard() {
     const inf = itemInfo(it), open = S.openRows.has(i);
     const tags = [it.cap && `<span class="tag blue">${fmtInt(it.cap)} kg</span>`, it.mat && `<span class="tag grey">${esc(matLabel(it.mat))}</span>`, it.size && `<span class="tag grey num">${esc(it.size.replace("x", " × "))}</span>`,
       it.volt && `<span class="tag amber">${esc(voltLabel(it.volt))}</span>`, it.opts.length && `<span class="tag green">+${it.opts.length} opsiyon</span>`, it.note && `<span class="tag solid-amber">${esc(noteLabel(it.note))}</span>`].filter(Boolean).join("");
-    return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
+    return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="thumb sm">${itemPhotos(it).main ? `<img src="${esc(itemPhotos(it).main)}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
       <td class="r">${esc(it.qty)}</td><td class="r">${missingPrice(it) ? `<span class="tag red">Fiyat eksik</span>` : money(unitPrice(it), c)}</td><td class="r strong">${money(lineTotal(it), c)}</td>
       <td><div class="acts"><button class="btn green sm" data-act="row-open" data-i="${i}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
         <button class="ibtn" data-act="li-edit" data-i="${i}" title="Düzenle" aria-label="${i + 1}. kalemi düzenle">${ICON.edit}</button>
         <button class="ibtn" data-act="li-up" data-i="${i}" title="Yukarı" aria-label="Yukarı taşı"${i === 0 ? " disabled" : ""}>${ICON.up}</button>
         <button class="ibtn" data-act="li-down" data-i="${i}" title="Aşağı" aria-label="Aşağı taşı"${i === q.items.length - 1 ? " disabled" : ""}>${ICON.down}</button>
         <button class="ibtn danger" data-act="li-del" data-i="${i}" title="Sil" aria-label="${i + 1}. kalemi sil">${ICON.trash}</button></div></td></tr>
-      ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${kv("Ana ürün fiyatı", money(basePrice(it), c))}${it.opts.map(o => kv("+ " + optName(o), money(num(o.price), c))).join("")}${kv("Birim fiyat", money(unitPrice(it), c), "blue")}${kv("Adet", esc(it.qty))}${kv("Tutar", money(lineTotal(it), c), "blue")}${it.size ? kv("Platform", esc(sizeLabel(it.size))) : ""}</div></td></tr>` : ""}`;
+      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Ana ürün fiyatı", money(basePrice(it), c))}${it.opts.map(o => kv("+ " + optName(o), money(num(o.price), c))).join("")}${kv("Birim fiyat", money(unitPrice(it), c), "blue")}${kv("Adet", esc(it.qty))}${kv("Tutar", money(lineTotal(it), c), "blue")}${it.size ? kv("Platform", esc(sizeLabel(it.size))) : ""}</div></td></tr>` : ""}`;
   }).join("");
   return `<section class="card" id="bottomCard"><div class="card-h"><h2 class="ttl">Proforma Kalemleri</h2><span class="muted small">${q.items.length} kalem</span>
      <div class="acts">${q.items.length ? outBtns("cur") : ""}<button class="btn blue" data-act="step" data-n="3"${q.items.length ? "" : " disabled"}>${ICON.eye} Önizle ve Oluştur</button></div></div>
-    ${q.items.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="c">No</th><th>Kod</th><th>Ürün</th><th class="r">Adet</th><th class="r">Birim fiyat</th><th class="r">Tutar</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${q.items.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="c">No</th><th class="thumb sm"><span class="sr-only">Fotoğraf</span></th><th>Kod</th><th>Ürün</th><th class="r">Adet</th><th class="r">Birim fiyat</th><th class="r">Tutar</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="total-line" style="margin-top:16px">Toplam (${c}) <b>${money(qTotal(q), c)}</b></div>`
     : `<div class="empty">Henüz kalem yok. Yukarıda bir lift seçip <b>Proformaya Ekle</b> deyin.${isBlank(q) ? `<div><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>` : ""}</div>`}</section>`;
 }
@@ -903,12 +927,12 @@ async function makeFile(kind, src, btn) {
     if (kind === "pdf") {
       if (!window.pdfMake) throw new Error("PDF modülü yüklenemedi; sayfayı yenileyin");
       if (!LOGO_N) await loadLogos();
-      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar;
+      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar; await loadPhotos(q);
       blob = await new Promise((res, rej) => { try { pdfMake.createPdf(pdfDoc(q)).getBlob(res); } catch (e) { rej(e); } });
     } else {
       if (!window.ExcelJS) { toast("Excel hazırlanıyor…"); await loadScript(XLSX_SRC); }
       if (!LOGO_N) await loadLogos();
-      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar;
+      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar; await loadPhotos(q);
       const wb = await buildXlsx(window.ExcelJS, q);
       blob = new Blob([await wb.xlsx.writeBuffer()], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     }
@@ -925,7 +949,7 @@ async function saveProduct(btn) {
   const d = {code: String(e.code).trim(), name: String(e.name).trim(), type: e.type, order,
     caps: String(e.caps || "").split(/[,;\s]+/).map(Number).filter(n => n > 0)};
   if (e.type === "LIFT") d.sizes = String(e.sizes || "").split(/[,;\s]+/).map(s => parseSize(s.replace("×", "x"))).filter(Boolean).map(m => m[0] + "x" + m[1]);
-  if (e.img) d.img = e.img;
+  d.img = e.img || "";
   busy(btn, true);
   try {
     await Store.putShared("product", id, d);

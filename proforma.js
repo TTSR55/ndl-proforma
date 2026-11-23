@@ -3,6 +3,7 @@
 
 let LOGO_D = "", LOGO_N = "";            // data: URL; açılışta duelsan.jpg / ndl.jpg dosyalarından doldurulur
 let LOGO_S = "", LOGO_S_AR = 0;         // PDF/Excel üretilirken proformayı kesen firmanın logosu (data: URL) ve en/boy oranı
+let PHOTOS = {};                         // PDF/Excel üretilirken ürün ve opsiyon fotoğrafları: kaynak → {d: data URL, ar: en/boy}
 const XLSX_SRC = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
 const XLSX_SRI = "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz";
 
@@ -69,6 +70,14 @@ function logoSrc(q) {
 /* katalogdaki varsayılan ürün fotoğrafı */
 const catalogImg = p => ((p && (CATALOG.find(x => x.id === p.id) || CAT_BY[p.type + "|" + p.code])) || {}).img || "";
 const pById = id => products().find(p => p.id === id);
+/* proformadaki fotoğraf: kütüphanedeki güncel kayıt (yönetici kaldırdıysa yok); ürün kütüphaneden çıkarıldıysa katalogdaki fotoğraf */
+function productImg(id, snap) { const p = pById(id); return p ? str(p.img) : catalogImg(Object.assign({}, snap || {}, {id})); }
+/* bir satırın fotoğrafları: ana ürün ve açıklamadaki sırasıyla opsiyonlar */
+const itemPhotos = it => ({main: productImg(it.pid, it.snap), opts: (it.opts || []).map(o => productImg(o.oid)).filter(Boolean)});
+const photoSrcs = q => [...new Set(q.items.flatMap(it => { const p = itemPhotos(it); return [p.main, ...p.opts]; }).filter(Boolean))];
+/* PDF/Excel'de yalnızca yüklenebilen fotoğraflar kullanılır */
+function loadedPhotos(it) { const p = itemPhotos(it); return {main: PHOTOS[p.main] ? p.main : "", opts: p.opts.filter(s => PHOTOS[s])}; }
+const hasPhotos = (q, get) => q.items.some(it => { const p = get(it); return !!(p.main || p.opts.length); });
 const optionProducts = () => products().filter(p => p.type === "OPTION");
 function liftSizes(p) { if (!p) return []; const src = (p.sizes && p.sizes.length) ? p.sizes : ((CAT_BY[p.type + "|" + p.code] || {}).sizes || []); return src.map(s => parseSize(String(s))).filter(Boolean).map(m => m[0] + "x" + m[1]); }
 function allSizes(p) { const s = [...liftSizes(p)]; CATALOG_SIZES.forEach(x => { if (!s.includes(x)) s.push(x); }); return s; }
@@ -223,11 +232,15 @@ const cfgUnit = c => num(c.price) + (c.mode === "lift" ? c.opts.reduce((a, o) =>
 /* ---------- proforma sayfası (HTML önizleme; PDF ile birebir) ---------- */
 function paperHtml(q, live) {
   const st = sellerOf(q), sp = isSpareOnly(q), c = q.currency, ls = logoSrc(q);
+  const ph = hasPhotos(q, itemPhotos), n = ph ? 7 : 6;
+  const photoTd = it => { const p = itemPhotos(it);
+    return `<td class="ph">${p.main ? `<img class="m" src="${esc(p.main)}" alt="">` : ""}${p.opts.length ? `<div class="ops">${p.opts.map(s => `<img src="${esc(s)}" alt="">`).join("")}</div>` : ""}</td>`; };
   const rows = q.items.map((it, i) => {
     const desc = descLines(it).map(l => l.map(s => s.red ? `<span class="red">${esc(s.t)}</span>` : esc(s.t)).join("")).join("<br>");
     const cls = [isPromo(it) ? "promo" : "", sp ? "sp" : "", live && S.flash === i ? "flash" : ""].filter(Boolean).join(" ");
-    return `<tr class="${cls}"${live ? ` data-act="li-edit" data-i="${i}" title="Düzenlemek için tıklayın"` : ""}><td>${i + 1}</td><td>${esc(itemInfo(it).code)}</td><td>${desc}</td><td>${esc(it.qty)}</td><td class="money">${money(unitPrice(it), c)}</td><td class="money">${money(lineTotal(it), c)}</td></tr>`;
+    return `<tr class="${cls}"${live ? ` data-act="li-edit" data-i="${i}" title="Düzenlemek için tıklayın"` : ""}><td>${i + 1}</td><td>${esc(itemInfo(it).code)}</td>${ph ? photoTd(it) : ""}<td>${desc}</td><td>${esc(it.qty)}</td><td class="money">${money(unitPrice(it), c)}</td><td class="money">${money(lineTotal(it), c)}</td></tr>`;
   }).join("");
+  const w = ph ? [30, 80, 96, 58, 92, 98] : [36, 90, 0, 66, 100, 108];
   return `
    <div class="p-head"><div>${ls ? `<img src="${esc(ls)}" alt="${esc(st.company)}" style="max-width:124px;max-height:44px;width:auto;height:auto">` : `<div style="height:40px"></div>`}<div class="p-since">${esc(st.since)}</div>
      <div class="p-co">${esc(st.company)}<br>${esc(st.address)}<br>${esc(st.contact)}</div></div>
@@ -241,9 +254,9 @@ function paperHtml(q, live) {
      <tr><td class="lb">ORIGIN OF THE GOODS</td><td>${esc(st.origin)}</td><td class="rl">HS CODE</td><td class="rv">${esc(st.hs)}</td></tr>
    </tbody></table>
    <div class="p-warr">${esc(st.warranty)}</div>
-   <table class="p-items"><thead><tr><th style="width:36px">NO</th><th style="width:90px">CODE</th><th>ITEM DESCRIPTION</th><th style="width:66px">QUANTITY</th><th style="width:100px">UNIT PRICE(${esc(c)})</th><th style="width:108px">TOTAL PRICE(${esc(c)})</th></tr></thead>
-   <tbody>${rows || `<tr><td colspan="6" style="height:44px;color:#8a8a8a">Henüz kalem eklenmedi</td></tr>`}
-   <tr class="total"><td class="blank" colspan="3"></td><td colspan="2">TOTAL</td><td class="money">${money(qTotal(q), c)}</td></tr></tbody></table>
+   <table class="p-items"><thead><tr><th style="width:${w[0]}px">NO</th><th style="width:${w[1]}px">CODE</th>${ph ? `<th style="width:${w[2]}px">IMAGE</th>` : ""}<th>ITEM DESCRIPTION</th><th style="width:${w[3]}px">QUANTITY</th><th style="width:${w[4]}px">UNIT PRICE(${esc(c)})</th><th style="width:${w[5]}px">TOTAL PRICE(${esc(c)})</th></tr></thead>
+   <tbody>${rows || `<tr><td colspan="${n}" style="height:44px;color:#8a8a8a">Henüz kalem eklenmedi</td></tr>`}
+   <tr class="total"><td class="blank" colspan="${n - 3}"></td><td colspan="2">TOTAL</td><td class="money">${money(qTotal(q), c)}</td></tr></tbody></table>
    <div class="p-bank-h">BANK DETAILS</div>
    <table class="p-bank"><tbody>
      <tr><td class="lb">BENEFICIARY:</td><td>${esc(st.beneficiary)}</td></tr>
@@ -257,16 +270,31 @@ function paperHtml(q, live) {
 /* ---------- PDF (pdfmake; Roboto Türkçe karakterleri kapsar) ---------- */
 function pdfDoc(q) {
   const st = sellerOf(q), sp = isSpareOnly(q), B = "#000000", c = q.currency;
+  const ph = hasPhotos(q, loadedPhotos), n = ph ? 7 : 6, PW = 64;   // PW: fotoğraf sütununun iç genişliği (pt)
+  const images = {}, key = {};
+  photoSrcs(q).forEach((s, i) => { if (PHOTOS[s]) { key[s] = "ph" + i; images["ph" + i] = PHOTOS[s].d; } });
+  /* fotoğraf hücresi: ana ürün, altında opsiyonlar ikişerli */
+  const photoCell = it => {
+    const p = loadedPhotos(it), stack = [];
+    if (p.main) stack.push({image: key[p.main], fit: [PW, 44], alignment: "center"});
+    for (let k = 0; k < p.opts.length; k += 2) {
+      const two = p.opts.slice(k, k + 2);
+      stack.push({columns: two.map(s => ({width: 30, image: key[s], fit: [30, 21], alignment: "center"})), columnGap: 4, margin: [two.length === 1 ? 17 : 0, stack.length ? 3 : 0, 0, 0]});
+    }
+    return {stack, margin: [0, 3, 0, 3]};
+  };
   const cell = (text, o = {}) => Object.assign({text, alignment: "center", margin: [2, sp ? 2 : 4, 2, sp ? 2 : 4]}, o);
-  const body = [["NO", "CODE", "ITEM DESCRIPTION", "QUANTITY", "UNIT PRICE(" + c + ")", "TOTAL PRICE(" + c + ")"].map(h => cell(h, {bold: true, fontSize: 7.5, margin: [2, 6, 2, 6]}))];
+  const head = ["NO", "CODE", ...(ph ? ["IMAGE"] : []), "ITEM DESCRIPTION", "QUANTITY", "UNIT PRICE(" + c + ")", "TOTAL PRICE(" + c + ")"];
+  const body = [head.map(h => cell(h, {bold: true, fontSize: 7.5, margin: [2, 6, 2, 6]}))];
   q.items.forEach((it, i) => {
     const desc = descLines(it).flatMap((l, li) => [...(li ? [{text: "\n"}] : []), ...l.map(s => ({text: s.t, color: s.red ? "#E00000" : B}))]);
-    const row = [cell(String(i + 1)), cell(itemInfo(it).code), cell(desc), cell(String(it.qty)), cell(money(unitPrice(it), c)), cell(money(lineTotal(it), c))];
+    const row = [cell(String(i + 1)), cell(itemInfo(it).code), ...(ph ? [photoCell(it)] : []), cell(desc), cell(String(it.qty)), cell(money(unitPrice(it), c)), cell(money(lineTotal(it), c))];
     if (isPromo(it)) row.forEach(x => { x.fillColor = "#FFFF00"; x.bold = true; });
     body.push(row);
   });
-  if (!q.items.length) body.push([cell("", {colSpan: 6}), {}, {}, {}, {}, {}]);
-  body.push([{text: "", colSpan: 3, border: [false, false, false, false]}, {}, {}, cell("TOTAL", {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
+  const fill = k => Array.from({length: k}, () => ({}));
+  if (!q.items.length) body.push([cell("", {colSpan: n}), ...fill(n - 1)]);
+  body.push([{text: "", colSpan: n - 3, border: [false, false, false, false]}, ...fill(n - 4), cell("TOTAL", {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
   const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]]
     .map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
   const bank = [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
@@ -275,13 +303,13 @@ function pdfDoc(q) {
     {text: [st.company, "\n", st.address, "\n", st.contact], fontSize: 7.5, lineHeight: 1.25, margin: [0, 2, 0, 0]}];
   const right = [LOGO_N ? {image: LOGO_N, width: 62, alignment: "center"} : {text: ""}, {text: st.brandNote || "", italics: true, fontSize: 6.5, alignment: "center", margin: [0, 3, 0, 0]}];
   return {pageSize: "A4", pageMargins: [32, 30, 32, 30], defaultStyle: {font: "Roboto", fontSize: 8, color: B},
-    info: {title: (q.title || "") + " " + (q.no || "")},
+    info: {title: (q.title || "") + " " + (q.no || "")}, images,
     content: [
       {columns: [{stack: left}, {width: 90, stack: right}]},
       {text: q.title || "", bold: true, fontSize: 12, alignment: "center", margin: [0, 12, 0, 8]},
       {table: {widths: [100, "*", 70, 160], body: info}, layout: Object.assign({paddingTop: () => 4, paddingBottom: () => 4}, thin), fontSize: 7.5},
       {text: st.warranty || "", color: "#E00000", bold: true, italics: true, alignment: "center", fontSize: 7.5, margin: [0, 10, 0, 14]},
-      {table: {headerRows: 1, dontBreakRows: true, widths: [24, 64, "*", 48, 74, 80], body}, layout: thin},
+      {table: {headerRows: 1, dontBreakRows: true, widths: ph ? [20, 52, PW, "*", 40, 62, 66] : [24, 64, "*", 48, 74, 80], body}, layout: thin},
       {text: "BANK DETAILS", bold: true, fontSize: 7.5, margin: [0, 14, 0, 2]},
       {table: {widths: [120, 220], body: bank}, layout: Object.assign({paddingTop: () => 2, paddingBottom: () => 2}, thin), fontSize: 7.5}
     ]};
@@ -290,11 +318,13 @@ function pdfDoc(q) {
 /* ---------- Excel (ExcelJS) — PDF ile aynı sayfa, tutarlar formüllü ---------- */
 async function buildXlsx(EX, q) {
   const st = sellerOf(q), c = q.currency, sym = CUR[c] || "", sp = isSpareOnly(q);
+  /* fotoğraf varsa sütunlar: NO · CODE · IMAGE · ITEM DESCRIPTION · QUANTITY · UNIT · TOTAL */
+  const ph = hasPhotos(q, loadedPhotos), K = ph ? {qty: "E", unit: "F", tot: "G", n: 7} : {qty: "D", unit: "E", tot: "F", n: 6};
   const wb = new EX.Workbook(); wb.creator = st.company || "NDL Proforma"; wb.created = new Date();
   const ws = wb.addWorksheet("PROFORMA", {views: [{showGridLines: false}],
     pageSetup: {paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
       margins: {left: 0.4, right: 0.4, top: 0.45, bottom: 0.45, header: 0.2, footer: 0.2}}});
-  ws.columns = [{width: 6}, {width: 14}, {width: 47}, {width: 12}, {width: 16}, {width: 17}];
+  ws.columns = (ph ? [5, 13, 14, 36, 11, 15, 16] : [6, 14, 47, 12, 16, 17]).map(width => ({width}));
   const F = (o = {}) => Object.assign({name: "Times New Roman", size: 8, color: {argb: "FF000000"}}, o);
   const thin = {style: "thin", color: {argb: "FF000000"}}, box = {top: thin, left: thin, bottom: thin, right: thin};
   const C = a => ({horizontal: "center", vertical: "middle", wrapText: true, ...a}), Lf = {horizontal: "left", vertical: "middle", wrapText: true};
@@ -302,47 +332,64 @@ async function buildXlsx(EX, q) {
   const mfmt = `#,##0.00 "${sym}"`;
   [1, 2, 3, 4].forEach(r => ws.getRow(r).height = 14);
   if (LOGO_S) ws.addImage(wb.addImage({base64: LOGO_S, extension: /^data:image\/png/i.test(LOGO_S) ? "png" : "jpeg"}), {tl: {col: 0.08, row: 0.15}, ext: {width: LOGO_S_AR ? Math.round(Math.min(220, 54 * LOGO_S_AR)) : 154, height: 54}});
-  if (LOGO_N) ws.addImage(wb.addImage({base64: LOGO_N, extension: "jpeg"}), {tl: {col: 5.12, row: 0.1}, ext: {width: 96, height: 49}});
+  if (LOGO_N) ws.addImage(wb.addImage({base64: LOGO_N, extension: "jpeg"}), {tl: {col: K.n - 1 + 0.12, row: 0.1}, ext: {width: 96, height: 49}});
   put("B5", st.since || "", {size: 7.5, italic: true}, {horizontal: "left", vertical: "top"});
-  put("F5", st.brandNote || "", {size: 7, italic: true}, C());
-  [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:D${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
-  ws.mergeCells("A10:F10"); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
+  put(K.tot + "5", st.brandNote || "", {size: 7, italic: true}, C());
+  [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:${K.qty}${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
+  ws.mergeCells(`A10:${K.tot}10`); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
   const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]];
   info.forEach((r, i) => {
     const n = 12 + i;
-    ws.mergeCells(`A${n}:B${n}`); ws.mergeCells(`E${n}:F${n}`);
-    put("A" + n, r[0], {bold: true}); put("C" + n, r[1] || ""); put("D" + n, r[2], {bold: true}, C()); put("E" + n, r[3] || "", {}, C());
-    for (let col = 1; col <= 6; col++) ws.getCell(n, col).border = box;
+    ws.mergeCells(`A${n}:B${n}`); if (ph) ws.mergeCells(`C${n}:D${n}`); ws.mergeCells(`${K.unit}${n}:${K.tot}${n}`);
+    put("A" + n, r[0], {bold: true}); put("C" + n, r[1] || ""); put(K.qty + n, r[2], {bold: true}, C()); put(K.unit + n, r[3] || "", {}, C());
+    for (let col = 1; col <= K.n; col++) ws.getCell(n, col).border = box;
     ws.getRow(n).height = (String(r[1] || "").length > 52 || r[2].length > 11) ? 24 : 16;
   });
-  ws.mergeCells("A18:F18"); put("A18", st.warranty || "", {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
+  ws.mergeCells(`A18:${K.tot}18`); put("A18", st.warranty || "", {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
   const H = 20;
-  ["NO", "CODE", "ITEM DESCRIPTION", "QUANTITY", `UNIT PRICE(${c})`, `TOTAL PRICE(${c})`].forEach((h, i) => { const x = ws.getCell(H, i + 1); x.value = h; x.font = F({bold: true}); x.alignment = C(); x.border = box; });
+  ["NO", "CODE", ...(ph ? ["IMAGE"] : []), "ITEM DESCRIPTION", "QUANTITY", `UNIT PRICE(${c})`, `TOTAL PRICE(${c})`].forEach((h, i) => { const x = ws.getCell(H, i + 1); x.value = h; x.font = F({bold: true}); x.alignment = C(); x.border = box; });
   ws.getRow(H).height = 28;
+  /* fotoğraflar C sütununa piksel konumuyla yerleşir (sütun ≈ 98 px): ana ürün 88×58, opsiyonlar ikişerli 42×28 */
+  const ids = {}; Object.keys(PHOTOS).forEach(s => { ids[s] = wb.addImage({base64: PHOTOS[s].d, extension: "jpeg"}); });
+  const EMU = 9525, X0 = 5, Y0 = 5, GAP = 4, MW = 88, MH = 58, OW = 42, OH = 28;
+  const photoPx = p => (p.main || p.opts.length) ? Y0 * 2 + (p.main ? MH : 0) + Math.ceil(p.opts.length / 2) * (OH + GAP) - (p.main ? 0 : GAP) : 0;
+  const placePhotos = (p, r) => {
+    let y = Y0 + Math.max(0, Math.floor((ws.getRow(r).height / 0.75 - photoPx(p)) / 2));   // satırda dikey ortalı
+    const place = (s, x, bw, bh) => {
+      const a = PHOTOS[s].ar || 1.5, w = Math.max(1, Math.round(Math.min(bw, bh * a))), h = Math.max(1, Math.round(w / a));
+      ws.addImage(ids[s], {tl: {nativeCol: 2, nativeColOff: Math.round((x + (bw - w) / 2) * EMU), nativeRow: r - 1, nativeRowOff: Math.round((y + (bh - h) / 2) * EMU)}, ext: {width: w, height: h}});
+    };
+    if (p.main) { place(p.main, X0, MW, MH); y += MH + GAP; }
+    for (let k = 0; k < p.opts.length; k += 2) {
+      const two = p.opts.slice(k, k + 2), x = two.length === 1 ? X0 + (MW - OW) / 2 : X0;
+      two.forEach((s, j) => place(s, x + j * (OW + GAP), OW, OH)); y += OH + GAP;
+    }
+  };
   let r = H + 1;
   q.items.forEach((it, i) => {
-    const pr = isPromo(it), lines = descLines(it), base = {size: 8.5, bold: pr};
+    const pr = isPromo(it), lines = descLines(it), base = {size: 8.5, bold: pr}, p = ph ? loadedPhotos(it) : null;
     const runs = []; lines.forEach((l, li) => l.forEach((s, si) => runs.push({text: (li && !si ? "\n" : "") + s.t, font: F({...base, color: {argb: s.red ? "FFE00000" : "FF000000"}})})));
-    const vals = [i + 1, itemInfo(it).code, {richText: runs}, Number(it.qty) || 0, unitPrice(it), {formula: `D${r}*E${r}`, result: lineTotal(it)}];
+    const vals = [i + 1, itemInfo(it).code, ...(ph ? [""] : []), {richText: runs}, Number(it.qty) || 0, unitPrice(it), {formula: `${K.qty}${r}*${K.unit}${r}`, result: lineTotal(it)}];
     vals.forEach((v, ci) => {
       const x = ws.getCell(r, ci + 1); x.value = v; x.font = F(base); x.alignment = C(); x.border = box;
-      if (ci >= 4) x.numFmt = mfmt;
+      if (ci >= K.n - 2) x.numFmt = mfmt;
       if (pr) x.fill = {type: "pattern", pattern: "solid", fgColor: {argb: "FFFFFF00"}};
     });
-    ws.getRow(r).height = Math.max(sp ? 16 : 40, lines.length * 12.5 + 10);
+    ws.getRow(r).height = Math.max(sp ? 16 : 40, lines.length * 12.5 + 10, p ? Math.ceil(photoPx(p) * 0.75) + 1 : 0);
+    if (p) placePhotos(p, r);
     r++;
   });
-  if (!q.items.length) { for (let col = 1; col <= 6; col++) ws.getCell(r, col).border = box; ws.getRow(r).height = 30; r++; }
+  if (!q.items.length) { for (let col = 1; col <= K.n; col++) ws.getCell(r, col).border = box; ws.getRow(r).height = 30; r++; }
   const last = r - 1;
-  ws.mergeCells(`D${r}:E${r}`); put("D" + r, "TOTAL", {bold: true}, C()); ws.getCell("D" + r).border = box; ws.getCell("E" + r).border = box;
-  const t = ws.getCell("F" + r); t.value = {formula: `SUM(F${H + 1}:F${last})`, result: qTotal(q)}; t.font = F({bold: true}); t.alignment = C(); t.numFmt = mfmt; t.border = box;
+  ws.mergeCells(`${K.qty}${r}:${K.unit}${r}`); put(K.qty + r, "TOTAL", {bold: true}, C()); ws.getCell(K.qty + r).border = box; ws.getCell(K.unit + r).border = box;
+  const t = ws.getCell(K.tot + r); t.value = {formula: `SUM(${K.tot}${H + 1}:${K.tot}${last})`, result: qTotal(q)}; t.font = F({bold: true}); t.alignment = C(); t.numFmt = mfmt; t.border = box;
   ws.getRow(r).height = 20;
   r += 2; put("A" + r, "BANK DETAILS", {bold: true}, {horizontal: "left", vertical: "middle", wrapText: false}); r++;
   [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].forEach(([a, b]) => {
-    ws.mergeCells(`A${r}:B${r}`); put("A" + r, a, {bold: true}); put("C" + r, b || "");
-    for (let col = 1; col <= 3; col++) ws.getCell(r, col).border = box;
+    ws.mergeCells(`A${r}:B${r}`); if (ph) ws.mergeCells(`C${r}:D${r}`); put("A" + r, a, {bold: true}); put("C" + r, b || "");
+    for (let col = 1; col <= (ph ? 4 : 3); col++) ws.getCell(r, col).border = box;
     ws.getRow(r).height = 14; r++;
   });
-  ws.pageSetup.printArea = `A1:F${r - 1}`;
+  ws.pageSetup.printArea = `A1:${K.tot}${r - 1}`;
   return wb;
 }

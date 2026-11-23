@@ -9,9 +9,9 @@ NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; pr
 - **Firmalar:** proformayı kesen firmalar (ör. Düelsan, Ahkos Otomotiv) ortak bir listede tutulur: unvan, adres, logo, başlık yazıları, garanti notu, numara öneki ve banka bilgileri. Yalnızca yönetici ekler ve değiştirir. Firma bilgileri proforma oluşturulurken proformaya kopyalanır; firma sonradan değişse de kesilmiş proforma değişmez.
 - **Proforma:** firma ve cari kart seçimi (ikisi de zorunlu; yeni proforma boş başlar) → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
 - **Sistem numarası:** her proformaya oluşturulduğu anda veritabanı bir numara verir (ör. PI2026/0007). Önek seçilen firmadan gelir (ör. DU2026/0012, AH2026/0013); sıra numarası tüm firmalarda ortaktır, sırayla artar ve sonradan değiştirilemez. Düzenlenen proforma numarasını korur.
-- **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
+- **Çıktı:** A4 PDF ve formüllü Excel (.xlsx). Ürün, opsiyon ve yedek parça fotoğrafları önizlemede, PDF'te ve Excel'de *IMAGE* sütununda görünür (opsiyonlar ana ürünün fotoğrafının altında). Hiçbir kalemin fotoğrafı yoksa sütun gösterilmez.
 - **Kayıtlar:** arama, cari kart, para birimi ve tarih filtresi; *Düzenle* ile değiştirme, *Tekrarla* ile yeni numaralı kopya. Her cari kartın altında o cariye ait proformalar listelenir.
-- **Ürünler:** ortak ve sabit ürün kütüphanesi (NDL 2026 kataloğuyla başlar). Lift modellerinin fotoğrafları katalogdan alınmıştır (`img/lifts`). Diğer kullanıcılar yalnızca görüntüler; ürün eklemek, silmek, değiştirmek ve fotoğraf yüklemek yöneticiye aittir.
+- **Ürünler:** ortak ve sabit ürün kütüphanesi (NDL 2026 kataloğuyla başlar). Lift, opsiyon ve yedek parça fotoğrafları katalogdan alınmıştır (`img/lifts`, `img/options`, `img/spares`). Diğer kullanıcılar yalnızca görüntüler; ürün eklemek, silmek, değiştirmek ve fotoğraf yüklemek yöneticiye aittir.
 - **Cari:** cari kart oluşturma ve düzenleme
 - **Örnek şablon:** yeni hesaplar boş bir proformayla başlar. İsteyen *Örnek şablonu aç* ile hayali bir firma ve yer tutucu fiyatlarla doldurulmuş bir örnek görebilir; bu şablon gerçek bir müşteri ya da teklif içermez.
 
@@ -47,7 +47,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `proforma.js` | Fiyat hesabı, proforma sayfası, PDF ve Excel üreticileri |
 | `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
 | `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
-| `img/lifts/` | Katalogdan alınmış lift fotoğrafları (model başına bir JPEG) |
+| `img/lifts/`, `img/options/`, `img/spares/` | Katalogdan alınmış ürün fotoğrafları (ürün başına bir JPEG; dosya adı ürün kimliğidir) |
 | `config.js` | Supabase bağlantı bilgileri |
 | `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), ortak ürün kütüphanesi ve firmalar, proforma numarası, onay, duyuru ve yönetici fonksiyonları |
 | `duelsan.jpg`, `ndl.jpg` | Proforma logoları |

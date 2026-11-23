@@ -132,12 +132,10 @@ create policy "shared_admin_delete" on public.shared for delete to authenticated
 revoke all on public.shared from anon, authenticated;
 grant select, insert, update, delete on public.shared to authenticated;
 
--- İlk geçiş (yalnızca ortak liste boşken): yöneticinin mevcut ürün kütüphanesi ortak kütüphane olur ve katalogdaki
--- liftlere fotoğrafları eklenir; yöneticinin firma bilgileri ilk firma kaydı olur. Diğer firmalar (ör. Ahkos) uygulamadan eklenir.
+-- İlk geçiş (yalnızca ortak liste boşken): yöneticinin mevcut ürün kütüphanesi ortak kütüphane olur (fotoğraflar aşağıda eklenir);
+-- yöneticinin firma bilgileri ilk firma kaydı olur. Diğer firmalar (ör. Ahkos) uygulamadan eklenir.
 insert into public.shared (kind, id, data, updated_by)
-select 'product', d.id,
-       case when d.id ~ '^ndl-[0-9]{4}-' and not d.data ? 'img' then d.data || jsonb_build_object('img', 'img/lifts/' || d.id || '.jpg') else d.data end,
-       d.user_id
+select 'product', d.id, d.data, d.user_id
   from public.docs d
  where d.kind = 'product'
    and d.user_id = (select p.id from public.profiles p where p.role = 'admin' and p.status = 'active' order by p.created_at limit 1)
@@ -153,6 +151,23 @@ select 'company', 'firma-1',
    and d.user_id = (select p.id from public.profiles p where p.role = 'admin' and p.status = 'active' order by p.created_at limit 1)
    and not exists (select 1 from public.shared x where x.kind = 'company')
 on conflict (kind, id) do nothing;
+
+-- Katalog fotoğrafları: liftler img/lifts, opsiyonlar img/options, yedek parçalar img/spares altında (dosya adı = ürün kimliği).
+-- Yalnızca hiç fotoğraf alanı olmayan katalog ürünlerine eklenir; yöneticinin kaldırdığı fotoğraf ("img": "") geri gelmez.
+update public.shared
+   set data = data || jsonb_build_object('img',
+         case when id ~ '^ndl-[0-9]{4}-' then 'img/lifts/' when id ~ '^opt-[0-9]{2}-' then 'img/options/' else 'img/spares/' end || id || '.jpg'),
+       updated_at = now()
+ where kind = 'product' and not (data ? 'img')
+   and (id ~ '^(ndl-[0-9]{4}|opt-[0-9]{2})-' or id = any (array[
+    'el-0701r-12-dc-motor-12v-1-8kw', 'gu-0101-12-ndl-full-powerpack-unit-12v', 'hd-0904l-pump-2-0cc-left',
+    'hd-1102-cartridge-2-2', 'hd-1202-ng6-two-way-valve', 'hd-1106-speed-relief-valve',
+    'hse-1002-kostal-cable-3950-mm', 'hse-1001-12-kostal-valve-coil-3-2-12v', 'ks-1001-control-box',
+    'el-2001-main-switch-100a', 'ks-1401-hand-controller-set', 'el-1201-spiral-cable',
+    'el-2501-12-starter-solenoid-12v-150a', 'hd-1301-valve-manifold-single-act', 'hs-0101r-lifting-cylinder-right',
+    'hs-0101l-lifting-cylinder-left', 'hs-0206r-tilt-cylinder-right', 'hs-0206l-tilt-cylinder-left',
+    'hd-2101-oil-tank-6l', 'gu-1001-powerpack-unit-cover', 'hs-2105-cylinder-cover',
+    'mk-2501-bearing-30x34x20']));
 
 -- 6) Proforma numarası: veritabanı verir, şirket genelinde tek ve sıralı, sonradan değiştirilemez ------
 --    Biçim: <önek><yıl>/<sıra>, ör. PI2026/0007. Önek, proformada seçilen firmanın "Numara öneki"dir
