@@ -316,6 +316,8 @@ function statusTag(q) {
   return `<span class="tag grey">Taslak</span>`;
 }
 function pageProforma() {
+  /* firma veya cari seçilmemişse (ör. eski bir taslak) önce 1. adım */
+  if (S.step > 1 && S.q && !S.q.sample && step1Missing(S.q).length) S.step = 1;
   const n = S.step;
   return `<div class="page"><div class="split"><aside class="intro" id="intro">${introHtml()}</aside>
     <section class="card" id="formCard">${sampleBanner()}${savedBanner()}${n === 1 ? formBuyer() : n === 2 ? formProducts() : formReview()}</section></div>
