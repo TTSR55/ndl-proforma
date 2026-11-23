@@ -40,7 +40,7 @@ const S = {
   products: [], companies: [], settings: {}, quotes: [], customers: [],
   q: null, cfg: null, cfgTried: false, flash: null,
   openRows: new Set(), openQ: new Set(),
-  qSearch: "", qCur: "", qFrom: "", qTo: "",
+  qSearch: "", qCur: "", qFrom: "", qTo: "", qStage: "", qView: "group", qColl: new Set(),
   lib: {type: "LIFT", sel: null, search: "", edit: null}, co: {sel: null, edit: null},
   firm: null, menu: null, confirm: null, undo: null, busy: false
 };
@@ -109,7 +109,7 @@ function baseQuote() {
     items: [], status: "draft", saved: false, dirty: false};
 }
 /* Proforma numarasını oluşturma anında veritabanı verir (şirket genelinde tek sayaç, değiştirilemez). Taslakta numara yoktur. */
-function newQuote() { return baseQuote(); }
+function newQuote() { return Object.assign(baseQuote(), {hsCodes: []}); }
 const str = v => (v == null ? "" : String(v));
 const numStr = v => (hasPrice(v) ? String(v) : "");
 function normItem(it) {
@@ -132,10 +132,58 @@ function normQuote(q) {
   if (!CUR[q.currency]) q.currency = "USD";
   if (!DATE_RE.test(q.date)) q.date = today();
   q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
+  if (Array.isArray(q.hsCodes)) { const seen = new Set(); q.hsCodes = q.hsCodes.map(normHs).filter(h => h && !seen.has(hsKey(h)) && seen.add(hsKey(h))).slice(0, HS_MAX); }
+  else delete q.hsCodes;
+  if (STAGE_BY[q.stage]) { q.stageAt = Number(q.stageAt) || 0; q.stageLog = (Array.isArray(q.stageLog) ? q.stageLog : []).filter(e => e && STAGE_BY[e.k]).map(e => ({k: e.k, at: Number(e.at) || 0})).slice(-30); }
+  else { delete q.stage; delete q.stageAt; delete q.stageLog; }
   if (q.seller && typeof q.seller === "object") { const o = {}; [...COMPANY_FIELDS, "logo"].forEach(k => { if (q.seller[k] != null) o[k] = str(q.seller[k]).slice(0, 500); }); if (/^data:/.test(o.logo || "")) delete o.logo; q.seller = o; }
   else delete q.seller;
   return q;
 }
+/* ---------- HS kodları (GTİP) ----------
+   Proforma oluşturulurken kullanıcı girer; birden çok kod olabilir. Eski proformalarda firma kaydındaki tek kod geçerlidir. */
+const HS_MAX = 10;
+function normHs(v) {
+  const s = String(v == null ? "" : v).trim().replace(/\s+/g, "").replace(/^\.+|\.+$/g, "");
+  if (!/^[0-9][0-9.]*$/.test(s)) return "";
+  const n = s.replace(/\./g, "").length; return n >= 4 && n <= 14 ? s : "";
+}
+const hsKey = s => String(s).replace(/\D/g, "");
+function hsList(q) {
+  if (q && Array.isArray(q.hsCodes)) return q.hsCodes;
+  const old = normHs(sellerOf(q).hs); return old ? [old] : [];
+}
+const hsText = q => hsList(q).join(", ");
+
+/* ---------- teklif aşamaları ----------
+   Proformanın satış sürecindeki yeri. Kullanıcı Kayıtlar'dan günceller; her değişiklik tarihiyle geçmişe yazılır.
+   grp: open = süreç devam ediyor · won = olumlu sonuçlandı · lost = olumsuz kapandı */
+const STAGES = [
+  {k: "prepared",    l: "Hazırlandı",         d: "Proforma oluşturuldu, henüz müşteriye iletilmedi.", tag: "grey",        grp: "open"},
+  {k: "sent",        l: "Müşteriye İletildi", d: "Müşteriye gönderildi, yanıt bekleniyor.",           tag: "blue",        grp: "open"},
+  {k: "negotiation", l: "Müzakere Sürecinde", d: "Fiyat ya da şartlar müşteriyle görüşülüyor.",       tag: "amber",       grp: "open"},
+  {k: "approved",    l: "Onaylandı",          d: "Müşteri proformayı onayladı.",                       tag: "green",       grp: "won"},
+  {k: "ordered",     l: "Siparişe Dönüştü",   d: "Ödeme ya da sipariş teyidi alındı.",                 tag: "solid-green", grp: "won"},
+  {k: "declined",    l: "Reddedildi",         d: "Müşteri teklifi kabul etmedi.",                      tag: "red",         grp: "lost"},
+  {k: "cancelled",   l: "İptal Edildi",       d: "Teklif geri çekildi ya da geçersiz kılındı.",        tag: "void",        grp: "lost"}
+];
+const STAGE_BY = Object.fromEntries(STAGES.map(s => [s.k, s]));
+const stageOf = q => (q && STAGE_BY[q.stage]) ? q.stage : "prepared";   // aşaması olmayan (eski) kayıtlar "Hazırlandı" sayılır
+const stageOpen = k => STAGE_BY[k].grp === "open";
+/* opsiyon (geçerlilik) süresi: "15 DAYS" → proforma tarihi + 15 gün. Yalnızca süreci devam eden tekliflerde izlenir. */
+function validUntil(q) {
+  const m = /(\d{1,3})\s*(DAYS?|GÜN|GUN|WEEKS?|HAFTA|MONTHS?|AY)\b/i.exec(String(q.validity || ""));
+  if (!m || !DATE_RE.test(String(q.date))) return "";
+  const u = m[2].toUpperCase(), n = Number(m[1]) * (/^(WEEK|HAFTA)/.test(u) ? 7 : /^(MONTH|AY)/.test(u) ? 30 : 1);
+  const d = new Date(q.date + "T00:00:00"); d.setDate(d.getDate() + n);
+  const z = x => String(x).padStart(2, "0"); return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+}
+function expiry(q) {
+  if (!stageOpen(stageOf(q))) return null;
+  const u = validUntil(q); if (!u) return null;
+  return {until: u, days: Math.round((new Date(u + "T00:00:00") - new Date(today() + "T00:00:00")) / 864e5)};
+}
+
 /* İsteğe bağlı örnek şablon: tamamen hayali bir firma ve katalogdan rastgele seçilmiş ürünler, yer tutucu fiyatlar.
    Gerçek bir müşteri ya da teklifle ilgisi yoktur; kullanıcı yalnızca "Örnek şablonu aç" derse açılır. */
 const TEMPLATE_BUYER = "ÖRNEK FİRMA A.Ş.";
@@ -143,7 +191,7 @@ function templateQuote() {
   const L = (code, o) => { const p = CATALOG.find(x => x.code === code) || {}; return Object.assign({pid: p.id, snap: {code: p.code, name: p.name, type: p.type}, opts: [], note: ""}, o); };
   const op = n => { const p = CATALOG.find(x => x.type === "OPTION" && x.name === n); return p ? [{oid: p.id, name: p.name, price: "100"}] : []; };
   const q = normQuote({buyer: TEMPLATE_BUYER, address: "Örnek Mahallesi, Deneme Caddesi No: 1", country: "TÜRKİYE", contact: "Ad Soyad",
-    payment: PAYMENTS[0], delivery: "EXW", validity: "15 DAYS", dtime: "FROM STOCK", sample: true,
+    payment: PAYMENTS[0], delivery: "EXW", validity: "15 DAYS", dtime: "FROM STOCK", sample: true, hsCodes: ["8428.90"],
     seller: {company: "ÖRNEK SATICI A.Ş.", address: "Örnek Mahallesi, Örnek Caddesi No: 2, Şehir", contact: "Tel: +90 000 000 00 00 · E-posta: info@ornek.example",
       origin: "TÜRKİYE", beneficiary: "ÖRNEK SATICI A.Ş.", bank: "ÖRNEK BANKA", branch: "MERKEZ", ibanUSD: "TR00 0000 0000 0000 0000 0000 00", ibanEUR: "TR00 0000 0000 0000 0000 0000 00", ibanTRY: "TR00 0000 0000 0000 0000 0000 00", swift: "XXXXTRXX"},
     items: [L("NDL 5010", {cap: "750", mat: "ALU", size: "2200x1800", volt: "12 V", qty: 2, price: "1000"}),
@@ -251,7 +299,7 @@ function paperHtml(q, live) {
      <tr><td class="lb">ADDRESS</td><td>${esc(addrLine(q))}</td><td class="rl">NO</td><td class="rv">${esc(q.no || "TASLAK")}</td></tr>
      <tr><td class="lb">PAYMENT TERM</td><td>${esc(q.payment)}</td><td class="rl">DELIVERY TERM</td><td class="rv">${esc(q.delivery)}</td></tr>
      <tr><td class="lb">OFFER VALIDITY</td><td>${esc(q.validity)}</td><td class="rl">DELIVERY TIME</td><td class="rv">${esc(q.dtime)}</td></tr>
-     <tr><td class="lb">ORIGIN OF THE GOODS</td><td>${esc(st.origin)}</td><td class="rl">HS CODE</td><td class="rv">${esc(st.hs)}</td></tr>
+     <tr><td class="lb">ORIGIN OF THE GOODS</td><td>${esc(st.origin)}</td><td class="rl">HS CODE</td><td class="rv">${esc(hsText(q))}</td></tr>
    </tbody></table>
    <div class="p-warr">${esc(st.warranty)}</div>
    <table class="p-items"><thead><tr><th style="width:${w[0]}px">NO</th><th style="width:${w[1]}px">CODE</th>${ph ? `<th style="width:${w[2]}px">IMAGE</th>` : ""}<th>ITEM DESCRIPTION</th><th style="width:${w[3]}px">QUANTITY</th><th style="width:${w[4]}px">UNIT PRICE(${esc(c)})</th><th style="width:${w[5]}px">TOTAL PRICE(${esc(c)})</th></tr></thead>
@@ -295,7 +343,7 @@ function pdfDoc(q) {
   const fill = k => Array.from({length: k}, () => ({}));
   if (!q.items.length) body.push([cell("", {colSpan: n}), ...fill(n - 1)]);
   body.push([{text: "", colSpan: n - 3, border: [false, false, false, false]}, ...fill(n - 4), cell("TOTAL", {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]]
+  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", hsText(q)]]
     .map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
   const bank = [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
   const thin = {hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B};
@@ -337,13 +385,14 @@ async function buildXlsx(EX, q) {
   put(K.tot + "5", st.brandNote || "", {size: 7, italic: true}, C());
   [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:${K.qty}${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
   ws.mergeCells(`A10:${K.tot}10`); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]];
+  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", hsText(q)]];
   info.forEach((r, i) => {
     const n = 12 + i;
     ws.mergeCells(`A${n}:B${n}`); if (ph) ws.mergeCells(`C${n}:D${n}`); ws.mergeCells(`${K.unit}${n}:${K.tot}${n}`);
     put("A" + n, r[0], {bold: true}); put("C" + n, r[1] || ""); put(K.qty + n, r[2], {bold: true}, C()); put(K.unit + n, r[3] || "", {}, C());
     for (let col = 1; col <= K.n; col++) ws.getCell(n, col).border = box;
-    ws.getRow(n).height = (String(r[1] || "").length > 52 || r[2].length > 11) ? 24 : 16;
+    const lines = Math.max(Math.ceil(String(r[1] || "").length / 52), Math.ceil(String(r[3] || "").length / 28), r[2].length > 11 ? 2 : 1, 1);
+    ws.getRow(n).height = lines > 1 ? 6 + 10 * lines : 16;
   });
   ws.mergeCells(`A18:${K.tot}18`); put("A18", st.warranty || "", {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
   const H = 20;
