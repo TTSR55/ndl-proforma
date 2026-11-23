@@ -2,6 +2,7 @@
 "use strict";
 
 let LOGO_D = "", LOGO_N = "";            // data: URL; açılışta duelsan.jpg / ndl.jpg dosyalarından doldurulur
+let LOGO_S = "", LOGO_S_AR = 0;         // PDF/Excel üretilirken proformayı kesen firmanın logosu (data: URL) ve en/boy oranı
 const XLSX_SRC = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
 const XLSX_SRI = "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz";
 
@@ -18,9 +19,14 @@ const CUR      = {USD: "$", EUR: "€", TRY: "₺"};
 const TYPES    = {LIFT: "Liftler", OPTION: "Opsiyonlar", SPARE: "Yedek parça", OTHER: "Diğer"};
 const MONTHS   = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
 
-/* Firma ve banka bilgileri koda yazılmaz; her kullanıcı kendi hesabında "Firma" sayfasından girer. */
+/* Firma ve banka bilgileri koda yazılmaz; yönetici "Firmalar" sayfasından girer (ör. Düelsan, Ahkos Otomotiv).
+   Proforma oluşturulurken firma seçilir ve bilgileri proformaya kopyalanır; firma sonradan değişse de kesilmiş proforma değişmez. */
+const COMPANY_FIELDS = ["company", "address", "contact", "since", "brandNote", "warranty", "origin", "hs", "prefix",
+  "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift"];
 const DEFAULT_SETTINGS = {company: "", address: "", contact: "", warranty: "", origin: "", hs: "",
-  beneficiary: "", bank: "", branch: "", ibanUSD: "", ibanEUR: "", ibanTRY: "", swift: "", prefix: "PI"};
+  beneficiary: "", bank: "", branch: "", ibanUSD: "", ibanEUR: "", ibanTRY: "", swift: "", prefix: "PI", since: "", brandNote: ""};
+/* firma kaydı olmayan eski proformalar eskisi gibi basılır */
+const LEGACY_HEAD = {since: "Since 1982...", brandNote: "The brand of Düelsan", logo: "duelsan.jpg"};
 
 const CAT_BY = Object.fromEntries(CATALOG.map(p => [p.type + "|" + p.code, p]));
 /* katalogdaki tüm platform ölçüleri (modelin kendi ölçüleri dışındakiler "Diğer katalog ölçüleri" olarak sunulur) */
@@ -30,15 +36,38 @@ const CATALOG_SIZES = [...new Set(CATALOG.flatMap(p => p.sizes || []))].sort((a,
 const S = {
   user: null, auth: "login", authEmail: "",
   view: "proforma", step: 1,
-  products: [], settings: {}, quotes: [], customers: [],
+  products: [], companies: [], settings: {}, quotes: [], customers: [],
   q: null, cfg: null, cfgTried: false, flash: null,
   openRows: new Set(), openQ: new Set(),
   qSearch: "", qCur: "", qFrom: "", qTo: "",
-  lib: {type: "LIFT", sel: null, search: "", edit: null},
+  lib: {type: "LIFT", sel: null, search: "", edit: null}, co: {sel: null, edit: null},
   firm: null, menu: null, confirm: null, undo: null, busy: false
 };
 const products = () => (S.products.length ? S.products : CATALOG);
 const settings = () => Object.assign({}, DEFAULT_SETTINGS, S.settings || {});
+const companyById = id => (id ? S.companies.find(c => c.id === id) : null) || null;
+/* proformayı kesen firma: proformadaki kopya; eski (firmasız) kayıtlı proformada hesabın eski firma ayarı */
+const legacyQuote = q => !!(q && q.saved && !q.companyId && !q.seller);
+function sellerOf(q) {
+  if (q && q.seller) return Object.assign({}, DEFAULT_SETTINGS, q.seller);
+  return legacyQuote(q) ? Object.assign({}, DEFAULT_SETTINGS, LEGACY_HEAD, S.settings || {}) : Object.assign({}, DEFAULT_SETTINGS);
+}
+const companyChosen = q => !!(q && (q.companyId || legacyQuote(q)));
+function applyCompany(q, c) {
+  q.companyId = c.id;
+  q.seller = Object.fromEntries(COMPANY_FIELDS.map(k => [k, str(c[k])]));
+  if (c.logo && !/^data:/.test(c.logo)) q.seller.logo = c.logo;   // dosya yolu kopyalanır; yüklenen logo firma kaydında kalır
+  return q;
+}
+/* logo: firmanın güncel kaydı, yoksa proformadaki kopya; eski proformalarda Düelsan logosu */
+function logoSrc(q) {
+  const c = companyById(q && q.companyId);
+  if (c && c.logo) return c.logo;
+  if (q && q.seller) return str(q.seller.logo);
+  return legacyQuote(q) ? LEGACY_HEAD.logo : "";
+}
+/* katalogdaki varsayılan ürün fotoğrafı */
+const catalogImg = p => ((p && (CATALOG.find(x => x.id === p.id) || CAT_BY[p.type + "|" + p.code])) || {}).img || "";
 const pById = id => products().find(p => p.id === id);
 const optionProducts = () => products().filter(p => p.type === "OPTION");
 function liftSizes(p) { if (!p) return []; const src = (p.sizes && p.sizes.length) ? p.sizes : ((CAT_BY[p.type + "|" + p.code] || {}).sizes || []); return src.map(s => parseSize(String(s))).filter(Boolean).map(m => m[0] + "x" + m[1]); }
@@ -87,13 +116,15 @@ function normItem(it) {
   it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => ({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}));
   return it;
 }
-const QUOTE_TEXT = ["id", "title", "no", "sysNo", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
+const QUOTE_TEXT = ["id", "title", "no", "sysNo", "companyId", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
 function normQuote(q) {
   q = Object.assign(baseQuote(), q);
   QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
   if (!CUR[q.currency]) q.currency = "USD";
   if (!DATE_RE.test(q.date)) q.date = today();
   q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
+  if (q.seller && typeof q.seller === "object") { const o = {}; [...COMPANY_FIELDS, "logo"].forEach(k => { if (q.seller[k] != null) o[k] = str(q.seller[k]).slice(0, 500); }); if (/^data:/.test(o.logo || "")) delete o.logo; q.seller = o; }
+  else delete q.seller;
   return q;
 }
 /* İsteğe bağlı örnek şablon: tamamen hayali bir firma ve katalogdan rastgele seçilmiş ürünler, yer tutucu fiyatlar.
@@ -104,6 +135,8 @@ function templateQuote() {
   const op = n => { const p = CATALOG.find(x => x.type === "OPTION" && x.name === n); return p ? [{oid: p.id, name: p.name, price: "100"}] : []; };
   const q = normQuote({buyer: TEMPLATE_BUYER, address: "Örnek Mahallesi, Deneme Caddesi No: 1", country: "TÜRKİYE", contact: "Ad Soyad",
     payment: PAYMENTS[0], delivery: "EXW", validity: "15 DAYS", dtime: "FROM STOCK", sample: true,
+    seller: {company: "ÖRNEK SATICI A.Ş.", address: "Örnek Mahallesi, Örnek Caddesi No: 2, Şehir", contact: "Tel: +90 000 000 00 00 · E-posta: info@ornek.example",
+      origin: "TÜRKİYE", beneficiary: "ÖRNEK SATICI A.Ş.", bank: "ÖRNEK BANKA", branch: "MERKEZ", ibanUSD: "TR00 0000 0000 0000 0000 0000 00", ibanEUR: "TR00 0000 0000 0000 0000 0000 00", ibanTRY: "TR00 0000 0000 0000 0000 0000 00", swift: "XXXXTRXX"},
     items: [L("NDL 5010", {cap: "750", mat: "ALU", size: "2200x1800", volt: "12 V", qty: 2, price: "1000"}),
       L("NDL 5050", {cap: "500", mat: "STEEL", size: "2080x1100", volt: "24 V", qty: 1, price: "1000", opts: op("WARNING LIGHT")}),
       L("NDL 5030", {cap: "500", mat: "ALU", size: "1160x980", volt: "12 V", qty: 3, price: "1000"})]});
@@ -189,16 +222,16 @@ const cfgUnit = c => num(c.price) + (c.mode === "lift" ? c.opts.reduce((a, o) =>
 
 /* ---------- proforma sayfası (HTML önizleme; PDF ile birebir) ---------- */
 function paperHtml(q, live) {
-  const st = settings(), sp = isSpareOnly(q), c = q.currency;
+  const st = sellerOf(q), sp = isSpareOnly(q), c = q.currency, ls = logoSrc(q);
   const rows = q.items.map((it, i) => {
     const desc = descLines(it).map(l => l.map(s => s.red ? `<span class="red">${esc(s.t)}</span>` : esc(s.t)).join("")).join("<br>");
     const cls = [isPromo(it) ? "promo" : "", sp ? "sp" : "", live && S.flash === i ? "flash" : ""].filter(Boolean).join(" ");
     return `<tr class="${cls}"${live ? ` data-act="li-edit" data-i="${i}" title="Düzenlemek için tıklayın"` : ""}><td>${i + 1}</td><td>${esc(itemInfo(it).code)}</td><td>${desc}</td><td>${esc(it.qty)}</td><td class="money">${money(unitPrice(it), c)}</td><td class="money">${money(lineTotal(it), c)}</td></tr>`;
   }).join("");
   return `
-   <div class="p-head"><div><img src="${LOGO_D || "duelsan.jpg"}" width="112" alt="Düelsan"><div class="p-since">Since 1982...</div>
+   <div class="p-head"><div>${ls ? `<img src="${esc(ls)}" alt="${esc(st.company)}" style="max-width:124px;max-height:44px;width:auto;height:auto">` : `<div style="height:40px"></div>`}<div class="p-since">${esc(st.since)}</div>
      <div class="p-co">${esc(st.company)}<br>${esc(st.address)}<br>${esc(st.contact)}</div></div>
-     <div><img src="${LOGO_N || "ndl.jpg"}" width="72" alt="NDL"><div class="p-brand">The brand of Düelsan</div></div></div>
+     <div><img src="${LOGO_N || "ndl.jpg"}" width="72" alt="NDL"><div class="p-brand">${esc(st.brandNote)}</div></div></div>
    <div class="p-title">${esc(q.title)}</div>
    <table class="p-info"><tbody>
      <tr><td class="lb">BUYER</td><td>${esc(q.buyer)}</td><td class="rl">DATE</td><td class="rv">${fmtDate(q.date)}</td></tr>
@@ -223,7 +256,7 @@ function paperHtml(q, live) {
 
 /* ---------- PDF (pdfmake; Roboto Türkçe karakterleri kapsar) ---------- */
 function pdfDoc(q) {
-  const st = settings(), sp = isSpareOnly(q), B = "#000000", c = q.currency;
+  const st = sellerOf(q), sp = isSpareOnly(q), B = "#000000", c = q.currency;
   const cell = (text, o = {}) => Object.assign({text, alignment: "center", margin: [2, sp ? 2 : 4, 2, sp ? 2 : 4]}, o);
   const body = [["NO", "CODE", "ITEM DESCRIPTION", "QUANTITY", "UNIT PRICE(" + c + ")", "TOTAL PRICE(" + c + ")"].map(h => cell(h, {bold: true, fontSize: 7.5, margin: [2, 6, 2, 6]}))];
   q.items.forEach((it, i) => {
@@ -238,9 +271,9 @@ function pdfDoc(q) {
     .map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
   const bank = [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
   const thin = {hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B};
-  const left = [LOGO_D ? {image: LOGO_D, width: 96} : {text: ""}, {text: "Since 1982...", fontSize: 7, margin: [104, 0, 0, 0]},
+  const left = [LOGO_S ? {image: LOGO_S, fit: [118, 40]} : {text: " ", fontSize: 26}, {text: st.since || "", fontSize: 7, margin: [104, 0, 0, 0]},
     {text: [st.company, "\n", st.address, "\n", st.contact], fontSize: 7.5, lineHeight: 1.25, margin: [0, 2, 0, 0]}];
-  const right = [LOGO_N ? {image: LOGO_N, width: 62, alignment: "center"} : {text: ""}, {text: "The brand of Düelsan", italics: true, fontSize: 6.5, alignment: "center", margin: [0, 3, 0, 0]}];
+  const right = [LOGO_N ? {image: LOGO_N, width: 62, alignment: "center"} : {text: ""}, {text: st.brandNote || "", italics: true, fontSize: 6.5, alignment: "center", margin: [0, 3, 0, 0]}];
   return {pageSize: "A4", pageMargins: [32, 30, 32, 30], defaultStyle: {font: "Roboto", fontSize: 8, color: B},
     info: {title: (q.title || "") + " " + (q.no || "")},
     content: [
@@ -256,7 +289,7 @@ function pdfDoc(q) {
 
 /* ---------- Excel (ExcelJS) — PDF ile aynı sayfa, tutarlar formüllü ---------- */
 async function buildXlsx(EX, q) {
-  const st = settings(), c = q.currency, sym = CUR[c] || "", sp = isSpareOnly(q);
+  const st = sellerOf(q), c = q.currency, sym = CUR[c] || "", sp = isSpareOnly(q);
   const wb = new EX.Workbook(); wb.creator = st.company || "NDL Proforma"; wb.created = new Date();
   const ws = wb.addWorksheet("PROFORMA", {views: [{showGridLines: false}],
     pageSetup: {paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
@@ -268,10 +301,10 @@ async function buildXlsx(EX, q) {
   const put = (addr, v, font, align) => { const x = ws.getCell(addr); x.value = v; x.font = F(font); x.alignment = align || Lf; return x; };
   const mfmt = `#,##0.00 "${sym}"`;
   [1, 2, 3, 4].forEach(r => ws.getRow(r).height = 14);
-  if (LOGO_D) ws.addImage(wb.addImage({base64: LOGO_D, extension: "jpeg"}), {tl: {col: 0.08, row: 0.15}, ext: {width: 154, height: 54}});
+  if (LOGO_S) ws.addImage(wb.addImage({base64: LOGO_S, extension: /^data:image\/png/i.test(LOGO_S) ? "png" : "jpeg"}), {tl: {col: 0.08, row: 0.15}, ext: {width: LOGO_S_AR ? Math.round(Math.min(220, 54 * LOGO_S_AR)) : 154, height: 54}});
   if (LOGO_N) ws.addImage(wb.addImage({base64: LOGO_N, extension: "jpeg"}), {tl: {col: 5.12, row: 0.1}, ext: {width: 96, height: 49}});
-  put("B5", "Since 1982...", {size: 7.5, italic: true}, {horizontal: "left", vertical: "top"});
-  put("F5", "The brand of Düelsan", {size: 7, italic: true}, C());
+  put("B5", st.since || "", {size: 7.5, italic: true}, {horizontal: "left", vertical: "top"});
+  put("F5", st.brandNote || "", {size: 7, italic: true}, C());
   [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:D${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
   ws.mergeCells("A10:F10"); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
   const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", st.hs]];

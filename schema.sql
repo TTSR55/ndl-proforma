@@ -109,8 +109,54 @@ grant select, insert, update, delete on public.docs to authenticated;
 revoke all on public.profiles from anon, authenticated;
 grant select on public.profiles to authenticated;
 
+-- 5b) Ortak ürün kütüphanesi ve firmalar -----------------------------------------------------------------
+--    Ürün kütüphanesi (kind = product) ve proformayı kesen firmalar (kind = company; ör. Düelsan, Ahkos Otomotiv)
+--    herkes için ortaktır: tüm aktif kullanıcılar okur, yalnızca yönetici ekler, değiştirir ve siler.
+create table if not exists public.shared (
+  kind       text        not null check (kind in ('product', 'company')),
+  id         text        not null check (char_length(id) between 1 and 120),
+  data       jsonb       not null default '{}'::jsonb check (jsonb_typeof(data) = 'object' and pg_column_size(data) <= 262144),
+  updated_at timestamptz not null default now(),
+  updated_by uuid        default auth.uid(),
+  primary key (kind, id)
+);
+alter table public.shared enable row level security;
+drop policy if exists "shared_read" on public.shared;
+drop policy if exists "shared_admin_insert" on public.shared;
+drop policy if exists "shared_admin_update" on public.shared;
+drop policy if exists "shared_admin_delete" on public.shared;
+create policy "shared_read" on public.shared for select to authenticated using ((select public.is_active()));
+create policy "shared_admin_insert" on public.shared for insert to authenticated with check ((select public.is_admin()));
+create policy "shared_admin_update" on public.shared for update to authenticated using ((select public.is_admin())) with check ((select public.is_admin()));
+create policy "shared_admin_delete" on public.shared for delete to authenticated using ((select public.is_admin()));
+revoke all on public.shared from anon, authenticated;
+grant select, insert, update, delete on public.shared to authenticated;
+
+-- İlk geçiş (yalnızca ortak liste boşken): yöneticinin mevcut ürün kütüphanesi ortak kütüphane olur ve katalogdaki
+-- liftlere fotoğrafları eklenir; yöneticinin firma bilgileri ilk firma kaydı olur. Diğer firmalar (ör. Ahkos) uygulamadan eklenir.
+insert into public.shared (kind, id, data, updated_by)
+select 'product', d.id,
+       case when d.id ~ '^ndl-[0-9]{4}-' and not d.data ? 'img' then d.data || jsonb_build_object('img', 'img/lifts/' || d.id || '.jpg') else d.data end,
+       d.user_id
+  from public.docs d
+ where d.kind = 'product'
+   and d.user_id = (select p.id from public.profiles p where p.role = 'admin' and p.status = 'active' order by p.created_at limit 1)
+   and not exists (select 1 from public.shared x where x.kind = 'product')
+on conflict (kind, id) do nothing;
+
+insert into public.shared (kind, id, data, updated_by)
+select 'company', 'firma-1',
+       (d.data - 'seeded') || jsonb_build_object('name', d.data->>'company', 'logo', 'duelsan.jpg', 'since', 'Since 1982...', 'brandNote', 'The brand of Düelsan', 'order', 1),
+       d.user_id
+  from public.docs d
+ where d.kind = 'settings' and d.id = 'main' and coalesce(d.data->>'company', '') <> ''
+   and d.user_id = (select p.id from public.profiles p where p.role = 'admin' and p.status = 'active' order by p.created_at limit 1)
+   and not exists (select 1 from public.shared x where x.kind = 'company')
+on conflict (kind, id) do nothing;
+
 -- 6) Proforma numarası: veritabanı verir, şirket genelinde tek ve sıralı, sonradan değiştirilemez ------
---    Biçim: <önek><yıl>/<sıra>, ör. PI2026/0007. Önek her kullanıcının Firma ayarındaki "Numara öneki"dir.
+--    Biçim: <önek><yıl>/<sıra>, ör. PI2026/0007. Önek, proformada seçilen firmanın "Numara öneki"dir
+--    (firmasız eski kayıtlarda kullanıcının eski firma ayarı). Sıra numarası tüm firmalarda ortaktır.
 create table if not exists public.quote_counters (year int primary key, last int not null default 0);
 alter table public.quote_counters enable row level security;
 revoke all on public.quote_counters from anon, authenticated;
@@ -135,8 +181,12 @@ begin
   if exists (select 1 from public.docs d where d.user_id = new.user_id and d.kind = new.kind and d.id = new.id) then return new; end if;
   insert into public.quote_counters as c (year, last) values (y, 1)
     on conflict (year) do update set last = c.last + 1 returning c.last into seq;
-  select upper(regexp_replace(coalesce(d.data->>'prefix', ''), '[^A-Za-z0-9]', '', 'g')) into pre
-    from public.docs d where d.user_id = new.user_id and d.kind = 'settings' and d.id = 'main';
+  select upper(regexp_replace(coalesce(c.data->>'prefix', ''), '[^A-Za-z0-9]', '', 'g')) into pre
+    from public.shared c where c.kind = 'company' and c.id = new.data->>'companyId';
+  if coalesce(pre, '') = '' then
+    select upper(regexp_replace(coalesce(d.data->>'prefix', ''), '[^A-Za-z0-9]', '', 'g')) into pre
+      from public.docs d where d.user_id = new.user_id and d.kind = 'settings' and d.id = 'main';
+  end if;
   pre := left(coalesce(nullif(pre, ''), 'PI'), 8);
   num := pre || y || '/' || lpad(seq::text, 4, '0');
   new.data := jsonb_set(jsonb_set(new.data, '{sysNo}', to_jsonb(num)), '{no}', to_jsonb(num));

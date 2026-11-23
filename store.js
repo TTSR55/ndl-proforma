@@ -69,7 +69,18 @@ function supabaseStore() {
     async addAnn(a) { const {error} = await sb.from("announcements").insert({title: a.title, body: a.body, level: a.level, active: true}); if (error) throw error; },
     async updAnn(id, patch) { const {error} = await sb.from("announcements").update(patch).eq("id", id); if (error) throw error; },
     async delAnn(id) { const {error} = await sb.from("announcements").delete().eq("id", id); if (error) throw error; },
-    async rpc(fn, args) { const {data, error} = await sb.rpc(fn, args || {}); if (error) throw error; return data; }
+    async rpc(fn, args) { const {data, error} = await sb.rpc(fn, args || {}); if (error) throw error; return data; },
+    /* ortak ürün kütüphanesi ve firmalar: tüm aktif kullanıcılar okur, yalnızca yönetici yazar (RLS) */
+    async listShared() { const {data, error} = await sb.from("shared").select("kind,id,data").limit(5000); if (error) throw error; return data || []; },
+    async putShared(kind, id, data) { const {data: row, error} = await sb.from("shared").upsert({kind, id, data, updated_at: new Date().toISOString()}, {onConflict: "kind,id"}).select("data").single(); if (error) throw error; return row ? row.data : data; },
+    async putSharedMany(rows) {
+      const now = new Date().toISOString();
+      for (let i = 0; i < rows.length; i += 200) {
+        const {error} = await sb.from("shared").upsert(rows.slice(i, i + 200).map(r => ({kind: r.kind, id: r.id, data: r.data, updated_at: now})), {onConflict: "kind,id"});
+        if (error) throw error;
+      }
+    },
+    async delShared(kind, id) { const {error} = await sb.from("shared").delete().eq("kind", kind).eq("id", id); if (error) throw error; }
   };
 }
 
@@ -111,7 +122,8 @@ function localStore() {
       if (kind === "quote") {   /* sunucudaki numaralandırmanın demo karşılığı: tüm demo hesaplarında ortak sayaç */
         if (!old) {
           const y = new Date().getFullYear(); d.counters = d.counters || {}; d.counters[y] = (d.counters[y] || 0) + 1;
-          const pre = String(((m["settings|main"] || {}).data || {}).prefix || "PI").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "PI";
+          const co = ((d.shared || {})["company|" + data.companyId] || {}).data || {};
+          const pre = String(co.prefix || ((m["settings|main"] || {}).data || {}).prefix || "PI").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "PI";
           data.sysNo = data.no = pre + y + "/" + String(d.counters[y]).padStart(4, "0");
         } else if (old.data && old.data.sysNo) { data.sysNo = data.no = old.data.sysNo; }
       }
@@ -141,6 +153,12 @@ function localStore() {
       if (fn === "admin_set_password") { const pw = String(args.new_password || ""); if (pw.length < 10 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) throw {message: "weak_password"}; hit[1].salt = rid(); hit[1].hash = await hash(pw, hit[1].salt); hit[1].must_change = true; save(d); return null; }
       if (fn === "admin_delete_user") { delete d.users[hit[0]]; delete d.docs[hit[1].id]; save(d); return null; }
       throw {message: "unknown_function"};
-    }
+    },
+    /* ortak kütüphane ve firmaların demo karşılığı: tüm demo hesaplarında ortak, yalnızca yönetici yazar */
+    async listShared() { return Object.values(load().shared || {}); },
+    async putShared(kind, id, data) { const d = load(); demoAdmin(d, this.uid); d.shared = d.shared || {}; d.shared[kind + "|" + id] = {kind, id, data: JSON.parse(JSON.stringify(data))}; save(d); return data; },
+    async putSharedMany(rows) { const d = load(); demoAdmin(d, this.uid); d.shared = d.shared || {}; rows.forEach(r => { d.shared[r.kind + "|" + r.id] = {kind: r.kind, id: r.id, data: r.data}; }); save(d); },
+    async delShared(kind, id) { const d = load(); demoAdmin(d, this.uid); if (d.shared) delete d.shared[kind + "|" + id]; save(d); }
   };
 }
+function demoAdmin(d, uid) { const me = Object.values(d.users).find(u => u.id === uid); if (!me || me.role !== "admin" || me.status !== "active") throw {code: "42501", message: "row-level security"}; }

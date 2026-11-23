@@ -1,16 +1,18 @@
 # NDL Proforma
 
-NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar, cari kartlar, ürün kütüphanesi ve firma/banka bilgileri her hesaba özel tutulur.
+NDL lift proforma portalı. Kullanıcılar e-posta ve şifreyle giriş yapar; proformalar ve cari kartlar her hesaba özel tutulur. Ürün kütüphanesi ve proformayı kesen firmalar herkes için ortaktır ve yalnızca yönetici tarafından değiştirilir.
 
 - **Pano:** menünün ilk sayfası. Proforma sayısı, bu ayki tutar, cari ve lift sayısı, son 6 ayın grafiği, en çok teklif verilen modeller, son proformalar ve en çok çalışılan cariler. Hesap ayarları (şifre değiştirme, çıkış) da buradadır.
 - **Duyurular:** yönetici *Yönetim* sayfasından duyuru yayınlar (bilgi / uyarı / önemli); tüm aktif kullanıcılar sayfanın en üstünde görür. Kullanıcı bir duyuruyu kapatabilir; yönetici duyuruyu yayından kaldırabilir ya da silebilir.
 - **Üyelik ve onay:** yeni kayıtlar yönetici onayını bekler; yönetici *Yönetim* sayfasından hesapları onaylar, dondurur ya da siler. İlk kaydolan hesap yönetici olur.
 - **Şifreler:** şifreler yalnızca tek yönlü özet (bcrypt) olarak saklanır; yönetici dahil hiç kimse bir şifreyi göremez. Yönetici, şifresini unutan kullanıcıya sıfırlama e-postası gönderebilir ya da geçici bir şifre verebilir. Geçici şifre verildiğinde kullanıcının açık oturumları kapanır; daha önce açılmış bir oturum da o andan itibaren hiçbir veriye erişemez. Kullanıcı ilk girişte kendi şifresini belirlemeden devam edemez.
-- **Proforma:** cari kart seçimi (zorunlu; yeni proforma boş başlar) → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
-- **Sistem numarası:** her proformaya oluşturulduğu anda veritabanı bir numara verir (ör. PI2026/0007). Numara şirket genelinde tektir, sırayla artar ve sonradan değiştirilemez; düzenlenen proforma numarasını korur.
+- **Firmalar:** proformayı kesen firmalar (ör. Düelsan, Ahkos Otomotiv) ortak bir listede tutulur: unvan, adres, logo, başlık yazıları, garanti notu, numara öneki ve banka bilgileri. Yalnızca yönetici ekler ve değiştirir. Firma bilgileri proforma oluşturulurken proformaya kopyalanır; firma sonradan değişse de kesilmiş proforma değişmez.
+- **Proforma:** firma ve cari kart seçimi (ikisi de zorunlu; yeni proforma boş başlar) → kütüphaneden lift seçimi (kapasite, kapak türü, platform boyutu veya özel boyut, powerpack voltajı, opsiyonlar, fiyat) → önizleme ve oluşturma
+- **Sistem numarası:** her proformaya oluşturulduğu anda veritabanı bir numara verir (ör. PI2026/0007). Önek seçilen firmadan gelir (ör. DU2026/0012, AH2026/0013); sıra numarası tüm firmalarda ortaktır, sırayla artar ve sonradan değiştirilemez. Düzenlenen proforma numarasını korur.
 - **Çıktı:** A4 PDF ve formüllü Excel (.xlsx)
 - **Kayıtlar:** arama, cari kart, para birimi ve tarih filtresi; *Düzenle* ile değiştirme, *Tekrarla* ile yeni numaralı kopya. Her cari kartın altında o cariye ait proformalar listelenir.
-- **Cari, Ürünler, Firma:** cari kart oluşturma ve düzenleme, düzenlenebilir ürün kütüphanesi (NDL 2026 kataloğuyla başlar), proforma üst/alt bilgileri
+- **Ürünler:** ortak ve sabit ürün kütüphanesi (NDL 2026 kataloğuyla başlar). Lift modellerinin fotoğrafları katalogdan alınmıştır (`img/lifts`). Diğer kullanıcılar yalnızca görüntüler; ürün eklemek, silmek, değiştirmek ve fotoğraf yüklemek yöneticiye aittir.
+- **Cari:** cari kart oluşturma ve düzenleme
 - **Örnek şablon:** yeni hesaplar boş bir proformayla başlar. İsteyen *Örnek şablonu aç* ile hayali bir firma ve yer tutucu fiyatlarla doldurulmuş bir örnek görebilir; bu şablon gerçek bir müşteri ya da teklif içermez.
 
 Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supabase.com) kullanır; derleme adımı yoktur.
@@ -32,7 +34,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 
 - `anon` / `publishable` anahtar tarayıcıda kullanılmak için tasarlanmıştır ve herkese açık olabilir. Verileri `schema.sql`'deki satır düzeyi güvenlik (RLS) kuralları korur: her kullanıcı yalnızca kendi satırlarını görür ve değiştirir.
 - `service_role` / `secret` anahtarı **asla** bu depoya yazmayın.
-- Firma unvanı, adres ve banka bilgileri koda yazılmaz; her kullanıcı *Firma* sayfasından kendi hesabına girer.
+- Firma unvanı, adres ve banka bilgileri koda yazılmaz; yönetici *Firmalar* sayfasından girer ve veritabanında saklanır.
 - Supabase'in ücretsiz e-posta servisi saatte birkaç e-postayla sınırlıdır. Ekip büyürse *Authentication → SMTP Settings* altından kendi e-posta sunucunuzu bağlayın.
 
 ## Dosyalar
@@ -45,8 +47,9 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `proforma.js` | Fiyat hesabı, proforma sayfası, PDF ve Excel üreticileri |
 | `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
 | `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
+| `img/lifts/` | Katalogdan alınmış lift fotoğrafları (model başına bir JPEG) |
 | `config.js` | Supabase bağlantı bilgileri |
-| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), proforma numarası, onay, duyuru ve yönetici fonksiyonları |
+| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), ortak ürün kütüphanesi ve firmalar, proforma numarası, onay, duyuru ve yönetici fonksiyonları |
 | `duelsan.jpg`, `ndl.jpg` | Proforma logoları |
 
 ## Yerelde çalıştırma

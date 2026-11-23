@@ -108,7 +108,7 @@ async function enter(u) {
   try { S.ann = await Store.listAnn(); } catch (e) { S.ann = []; }
   try {
     ingest(await Store.loadAll());
-    if (!S.products.length && !S.settings.seeded) await seedCatalog();
+    await loadShared();
   } catch (e) {
     S.entering = false;
     if (isMissingTable(e)) renderSetupNeeded(); else renderFatal("Verileriniz yüklenemedi: " + authError(e), true);
@@ -145,28 +145,60 @@ function renderGate(prof) {
     <div class="row-between" style="width:100%;margin-top:6px">${susp ? "<span></span>" : `<button class="btn blue" data-act="gate-check">${ICON.check} Tekrar kontrol et</button>`}<button class="btn" data-act="logout">${ICON.out} Çıkış yap</button></div></div></div></div>`;
 }
 function leave() {
-  Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
+  Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], companies: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
+  S.co = {sel: null, edit: null};
   S.admin = {users: null, loading: false, filter: ""}; S.cari = {sel: null, search: ""}; S.qCari = ""; S.pick = {search: "", mode: ""};
   S.lib.edit = null; S.openRows.clear(); S.openQ.clear(); renderAuth();
 }
 function ingest(rows) {
-  S.quotes = []; S.customers = []; S.products = []; S.settings = {};
+  S.quotes = []; S.customers = []; S.settings = {};
   rows.forEach(r => {
     const d = Object.assign({}, r.data, {id: r.id});
     if (r.kind === "quote") S.quotes.push(d);
     else if (r.kind === "customer") S.customers.push(normCari(d));
-    else if (r.kind === "product") S.products.push(d);
     else if (r.kind === "settings" && r.id === "main") S.settings = r.data || {};
   });
   S.quotes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  S.products.sort((a, b) => (a.order || 0) - (b.order || 0));
 }
-async function seedCatalog() {
-  const rows = CATALOG.map(({id, ...d}) => ({kind: "product", id, data: d}));
-  const st = Object.assign({}, S.settings, {seeded: true});
-  await Store.putMany([...rows, {kind: "settings", id: "main", data: st}]);
-  S.products = CATALOG.map(p => ({...p})); S.settings = st;
+/* ürün kütüphanesi ve firmalar herkes için ortaktır; yalnızca yönetici değiştirir (bkz. schema.sql · shared) */
+const isAdmin = () => S.role === "admin";
+const coSort = (a, b) => (a.order || 0) - (b.order || 0) || String(a.name || a.company || "").localeCompare(String(b.name || b.company || ""), "tr");
+const coName = c => (c && (c.name || c.company)) || "";
+async function loadShared() {
+  const rows = await Store.listShared();
+  S.products = rows.filter(r => r.kind === "product").map(r => Object.assign({}, r.data, {id: r.id})).sort((a, b) => (a.order || 0) - (b.order || 0));
+  S.companies = rows.filter(r => r.kind === "company").map(r => Object.assign({}, r.data, {id: r.id})).sort(coSort);
+  /* ilk kurulum: kütüphane boşsa yönetici katalogla (fotoğraflarıyla) başlatır */
+  if (!S.products.length && isAdmin()) { await Store.putSharedMany(CATALOG.map(({id, ...d}) => ({kind: "product", id, data: d}))); S.products = CATALOG.map(p => ({...p})); }
 }
+/* yüklenen görseli küçültür (yalnızca yönetici; ortak kayıtta data: URL olarak saklanır) */
+function shrinkImage(file, max, type, quality) {
+  return new Promise((res, rej) => {
+    if (!file || !/^image\/(png|jpe?g|webp|gif|svg\+xml)$/i.test(file.type)) return rej(new Error("PNG, JPG veya WebP bir görsel seçin"));
+    if (file.size > 15 * 1024 * 1024) return rej(new Error("Dosya çok büyük (en fazla 15 MB)"));
+    const u = URL.createObjectURL(file), im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, max / Math.max(im.naturalWidth || max, im.naturalHeight || max)), w = Math.max(1, Math.round((im.naturalWidth || max) * k)), h = Math.max(1, Math.round((im.naturalHeight || max) * k));
+      const cv = document.createElement("canvas"); cv.width = w; cv.height = h; const x = cv.getContext("2d");
+      const draw = t => { x.clearRect(0, 0, w, h); if (t === "image/jpeg") { x.fillStyle = "#fff"; x.fillRect(0, 0, w, h); } x.drawImage(im, 0, 0, w, h); return cv.toDataURL(t, quality); };
+      let out = draw(type); if (out.length > 200000) out = draw("image/jpeg");
+      URL.revokeObjectURL(u); out.length > 240000 ? rej(new Error("Görsel çok büyük; daha küçük bir dosya deneyin")) : res(out);
+    };
+    im.onerror = () => { URL.revokeObjectURL(u); rej(new Error("Görsel okunamadı")); };
+    im.src = u;
+  });
+}
+/* PDF ve Excel için logo: data: URL ve en/boy oranı */
+const LOGO_CACHE = {};
+async function logoData(src) {
+  if (!src) return {d: "", ar: 0};
+  if (LOGO_CACHE[src]) return LOGO_CACHE[src];
+  let d = src;
+  if (!/^data:/.test(src)) { const b = await (await fetch(src)).blob(); d = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); }
+  const ar = await new Promise(res => { const im = new Image(); im.onload = () => res(im.naturalHeight ? im.naturalWidth / im.naturalHeight : 0); im.onerror = () => res(0); im.src = d; });
+  return (LOGO_CACHE[src] = {d, ar});
+}
+const coLogo = c => `<span class="co-logo">${c && c.logo ? `<img src="${esc(c.logo)}" alt="">` : `<b>${esc((coName(c) || "?").trim().charAt(0).toLocaleUpperCase("tr"))}</b>`}</span>`;
 const draftKey = () => "ndl-draft:" + (S.user ? S.user.id : "");
 function loadDraft() {
   try { const s = lsGet(draftKey()); if (s) { const d = JSON.parse(s); return {q: normQuote(d.q || {}), step: d.step || 1, cfg: Object.assign(newCfg(), d.cfg || {})}; } } catch (e) {}
@@ -237,7 +269,7 @@ function authBody(m) {
 }
 
 /* ---------- uygulama çerçevesi ---------- */
-const NAV = [["pano", "Pano", "pano"], ["proforma", "Proforma", "doc"], ["proformalar", "Kayıtlar", "stack"], ["alicilar", "Cari", "users"], ["urunler", "Ürünler", "cube"], ["firma", "Firma", "firm"]];
+const NAV = [["pano", "Pano", "pano"], ["proforma", "Proforma", "doc"], ["proformalar", "Kayıtlar", "stack"], ["alicilar", "Cari", "users"], ["urunler", "Ürünler", "cube"], ["firma", "Firmalar", "firm"]];
 function renderShell() {
   root.innerHTML = `<div class="app"><header class="top" id="top"></header><nav class="side" id="side" aria-label="Menü"></nav><main class="main" id="main"></main></div>`;
   renderTop(); renderSide();
@@ -252,7 +284,7 @@ function renderTop() {
      <button class="round" data-act="theme" title="${isDark() ? "Açık tema" : "Koyu tema"}" aria-label="Temayı değiştir">${isDark() ? ICON.sun : ICON.moon}</button>
      <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü">${esc(initials())}</button>
        ${S.menu === "user" ? `<div class="pop" role="menu"><div class="who"><b>${esc(S.user.email)}</b><span>${Store.mode === "demo" ? "Demo hesabı · bu tarayıcıda" : "Kayıtlarınız yalnızca bu hesapta"}</span></div>
-         <a href="#pano" role="menuitem">${ICON.key} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firma bilgileri</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
+         <a href="#pano" role="menuitem">${ICON.key} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firmalar</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
          <button class="danger" data-act="logout" role="menuitem">${ICON.out} Çıkış yap</button></div>` : ""}</div>
    </div>`;
 }
@@ -290,16 +322,16 @@ function pageProforma() {
     ${n === 3 ? previewCard() : itemsCard()}</div>`;
 }
 function introHtml() {
-  const q = S.q, st = settings();
-  const hasCari = cariChosen(q), locked = k => k > 1 && !hasCari && !q.sample;
-  const steps = [[1, "Cari Kart", hasCari ? q.buyer : "Seçilmedi"], [2, "Ürün Ekle", q.items.length ? q.items.length + " kalem" : "Kalem yok"], [3, "Önizle ve Oluştur", q.saved ? (q.dirty ? "Kaydedilmemiş değişiklik" : "Kaydedildi") : "Taslak"]];
-  const done = k => ({1: hasCari, 2: q.items.length > 0, 3: q.saved && !q.dirty})[k];
+  const q = S.q, hasCo = companyChosen(q), hasCari = cariChosen(q), ready = hasCo && hasCari, locked = k => k > 1 && !ready && !q.sample;
+  const coLbl = hasCo ? (sellerOf(q).company || coName(companyById(q.companyId))) : "";
+  const steps = [[1, "Firma ve Cari Kart", ready ? coLbl + " → " + q.buyer : hasCari ? "Firma seçilmedi" : hasCo ? coLbl + " · cari seçilmedi" : "Seçilmedi"], [2, "Ürün Ekle", q.items.length ? q.items.length + " kalem" : "Kalem yok"], [3, "Önizle ve Oluştur", q.saved ? (q.dirty ? "Kaydedilmemiş değişiklik" : "Kaydedildi") : "Taslak"]];
+  const done = k => ({1: ready, 2: q.items.length > 0, 3: q.saved && !q.dirty})[k];
   return `<div class="eyebrow">${esc(hasCari ? q.buyer : "Cari kart seçilmedi")}</div><h1>${q.saved ? "Proforma Düzenle" : "Proforma Oluştur"}</h1>
-   <p class="lead">Cari kartı seçin, lifti yapılandırıp proformaya ekleyin, önizleyip oluşturun.</p><hr>
+   <p class="lead">Firmayı ve cari kartı seçin, lifti yapılandırıp proformaya ekleyin, önizleyip oluşturun.</p><hr>
    <dl class="meta"><div><dt>Proforma no</dt><dd class="num">${q.no ? esc(q.no) : `<span class="muted" style="font-weight:500">oluşturulunca verilir</span>`}</dd></div><div><dt>Tarih</dt><dd>${fmtDate(q.date)}</dd></div><div><dt>Durum</dt><dd>${statusTag(q)}</dd></div>
      <div><dt>Toplam (${q.currency})</dt><dd class="amount">${money(qTotal(q), q.currency)}</dd></div></dl>
-   <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}${locked(k) ? " locked" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}${locked(k) ? ' aria-disabled="true" title="Önce cari kart seçin"' : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
-   ${!st.company ? `<div class="note-card"><b>Firma bilgileriniz eksik</b>Proformanın üst ve alt kısmındaki firma ve banka bilgilerini bir kez girmeniz yeterli.<a class="link" href="#firma">Firma bilgilerini gir ${ICON.right}</a></div>` : ""}`;
+   <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}${locked(k) ? " locked" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}${locked(k) ? ` aria-disabled="true" title="${step1Msg(q)}"` : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
+   ${!S.companies.length ? `<div class="note-card"><b>Firma tanımlı değil</b>${isAdmin() ? `Proformayı kesecek firmaları (ör. Düelsan, Ahkos Otomotiv) bir kez ekleyin; her proformada bunlardan biri seçilir.<a class="link" href="#firma">Firma ekle ${ICON.right}</a>` : "Proforma oluşturmak için yöneticinin firma tanımlaması gerekiyor."}</div>` : ""}`;
 }
 function refreshIntro() { const el = $("intro"); if (el) el.innerHTML = introHtml(); }
 function fld(id, k, label, tag, cls, attrs = "") { return `<div class="fld ${cls}"><label for="${id}">${label}${tag ? ` <em>${tag}</em>` : ""}</label><input id="${id}" data-q="${k}" value="${esc(S.q[k])}"${attrs}></div>`; }
@@ -338,15 +370,30 @@ function cariSummary(q) {
     <p>${esc(addrLine(q)) || "Adres girilmemiş"}</p>
     <div class="cs-grid">${line("Vergi dairesi", q.taxOffice)}${line("Vergi no", q.taxId)}${line("Yetkili", q.contact)}${line("Telefon", q.phone)}${line("E-posta", q.email)}</div></div>`;
 }
+/* 1. adım: proformayı kesen firma (ortak listeden, zorunlu) */
+function coPick() {
+  const q = S.q, cur = companyById(q.companyId), chosen = companyChosen(q) && !S.pick.co;
+  if (chosen) {
+    const st = sellerOf(q);
+    return `<div class="card-h"><h2 class="ttl">Firma</h2><div class="acts"><button class="btn sm" data-act="pick-co-change">${ICON.firm} Değiştir</button></div></div>
+      <div class="co-sum">${coLogo(cur || {logo: logoSrc(q), name: st.company})}<div><b>${esc(st.company || coName(cur) || "—")}</b><span>${esc([st.address, st.contact].filter(Boolean).join(" · ") || "Proformayı bu firma keser")}</span></div></div>`;
+  }
+  if (!S.companies.length) return `<div class="card-h"><h2 class="ttl">Firma Seçin</h2></div><div class="empty">${isAdmin() ? `Henüz firma yok. Proformayı kesecek firmaları (ör. Düelsan, Ahkos Otomotiv) ekleyin.<div><a class="btn blue" href="#firma">${ICON.plus} Firma ekle</a></div>` : "Yönetici henüz firma tanımlamadı. Proforma oluşturmak için yöneticinize başvurun."}</div>`;
+  return `<div class="card-h"><h2 class="ttl">Firma Seçin</h2><span class="muted small">Proformayı hangi firma kesiyor?</span>${S.pick.co && companyChosen(q) ? `<div class="acts"><button class="btn ghost sm" data-act="pick-co-cancel">Vazgeç</button></div>` : ""}</div>
+    <div class="pick-list co-list">${S.companies.map(c => `<button class="pick co${c.id === q.companyId ? " on" : ""}" data-act="pick-co" data-id="${esc(c.id)}">${coLogo(c)}<span class="pk-main"><b>${esc(coName(c))}</b><span>${esc(c.company || "—")}</span></span>${ICON.right}</button>`).join("")}</div>`;
+}
+const step1Missing = q => [companyChosen(q) ? "" : "firma", cariChosen(q) ? "" : "cari kart"].filter(Boolean);
+const step1Msg = q => { const m = step1Missing(q); return m.length === 2 ? "Önce firmayı ve cari kartı seçin" : m[0] === "firma" ? "Önce proformayı kesecek firmayı seçin" : "Önce bir cari kart seçin"; };
 function formBuyer() {
   const q = S.q, P = S.pick, card = cariById(q.customerId);
+  const top = (isBlank(q) && !q.companyId ? templateCard() : "") + coPick() + `<div class="blk-sep"></div>`;
   if (P.mode === "new" || P.mode === "edit") return `<div class="card-h"><h2 class="ttl">${P.mode === "new" ? "Yeni Cari Kart" : "Cari Kartı Düzenle"}</h2></div>${cariFields(S.cariEdit, S.cariTried)}
     <div class="card-f"><button class="btn ghost" data-act="pick-cancel">Vazgeç</button><div class="grow muted small">Kart kaydedilir ve bu proforma için seçilir.</div><div class="btns"><button class="btn blue" data-act="pick-save">${ICON.check} Kaydet ve Seç</button></div></div>`;
-  if ((card || (q.saved && q.buyer.trim())) && P.mode !== "change") return `<div class="card-h"><h2 class="ttl">Cari Kart</h2><div class="acts">${card ? `<button class="btn sm" data-act="pick-edit">${ICON.edit} Kartı düzenle</button>` : ""}<button class="btn sm" data-act="pick-change">${ICON.users} Değiştir</button></div></div>
+  if ((card || (q.saved && q.buyer.trim())) && P.mode !== "change") return `${top}<div class="card-h"><h2 class="ttl">Cari Kart</h2><div class="acts">${card ? `<button class="btn sm" data-act="pick-edit">${ICON.edit} Kartı düzenle</button>` : ""}<button class="btn sm" data-act="pick-change">${ICON.users} Değiştir</button></div></div>
     ${cariSummary(q)}${card ? "" : `<p class="hint" style="margin:12px 0 0">Bu proforma bir cari karta bağlı değil; bilgiler proformanın kendi kopyasından geliyor.</p>`}
     <div class="card-f"><div class="grow muted small">Proformadaki alıcı bilgileri bu karttan alınır.</div><div class="btns"><button class="btn blue" data-act="step" data-n="2">Devam: Ürün Ekle ${ICON.right}</button></div></div>`;
   const s = P.search.toLowerCase().trim(), list = cariList().filter(c => !s || [c.code, c.name, c.city, c.country, c.contact, c.taxId].join(" ").toLowerCase().includes(s));
-  return `${isBlank(q) ? templateCard() : ""}<div class="card-h"><h2 class="ttl">Cari Kart Seçin</h2><span class="muted small">${S.customers.length} kart</span><div class="acts">${P.mode === "change" ? `<button class="btn ghost sm" data-act="pick-cancel">Vazgeç</button>` : ""}<button class="btn blue sm" data-act="pick-new">${ICON.plus} Yeni Cari Kart</button></div></div>
+  return `${top}<div class="card-h"><h2 class="ttl">Cari Kart Seçin</h2><span class="muted small">${S.customers.length} kart</span><div class="acts">${P.mode === "change" ? `<button class="btn ghost sm" data-act="pick-cancel">Vazgeç</button>` : ""}<button class="btn blue sm" data-act="pick-new">${ICON.plus} Yeni Cari Kart</button></div></div>
     ${S.customers.length ? `<div class="ico-in" style="margin-bottom:12px">${ICON.search}<input id="pickSearch" data-f="pick.search" value="${esc(P.search)}" placeholder="Kod, unvan, şehir veya vergi no ara" autocomplete="off"></div>
       <div class="pick-list">${list.map(c => `<button class="pick${c.id === q.customerId ? " on" : ""}" data-act="pick" data-id="${esc(c.id)}"><span class="tag blue">${esc(c.code || "—")}</span><span class="pk-main"><b>${esc(c.name)}</b><span>${esc([c.city, c.country].filter(Boolean).join(", ") || "—")}${c.contact ? " · " + esc(c.contact) : ""}</span></span>${ICON.right}</button>`).join("") || `<p class="empty-sm">Aramayla eşleşen cari kart yok.</p>`}</div>`
     : `<div class="empty">Henüz cari kart yok. Proformaya başlamak için ilk cari kartı oluşturun.<div><button class="btn blue" data-act="pick-new">${ICON.plus} Yeni Cari Kart</button></div></div>`}
@@ -381,7 +428,7 @@ function cfgLift() {
     <div class="fld"><label for="cprice">Ana ürün birim fiyatı</label>${moneyIn("cprice", 'data-c="price"', c.price, S.cfgTried && !hasPrice(c.price))}</div>
     <div class="fld"><label for="c_note">Satır notu</label><select id="c_note" data-c="note">${NOTES.map(x => opt(x.v, c.note, x.l)).join("")}</select></div>
    </div>
-   <div class="plate-wrap">${p ? `<div class="model-card"><b>${esc(p.code)}</b><span>${esc(p.name)}</span><small>${capRange(p)}${cat.length ? " · katalog: " + cat.map(s => s.replace("x", "×")).join(", ") : ""}</small></div>` : ""}
+   <div class="plate-wrap">${p && p.img ? `<figure class="pphoto sm"><img src="${esc(p.img)}" alt="${esc(p.code)}"></figure>` : ""}${p ? `<div class="model-card"><b>${esc(p.code)}</b><span>${esc(p.name)}</span><small>${capRange(p)}${cat.length ? " · katalog: " + cat.map(s => s.replace("x", "×")).join(", ") : ""}</small></div>` : ""}
      <figure class="plate" id="plate">${plateSvg(cfgSize(c), c.mat)}</figure></div></div>
    <div class="optbox"><div class="lbl">Opsiyonlar <em>${c.opts.length ? c.opts.length + " seçili · fiyatları birim fiyata eklenir" : "isteğe bağlı · her birinin fiyatı ayrıca girilir"}</em></div>
     <div class="chips">${optionProducts().map(op => { const on = c.opts.some(o => o.oid === op.id); return `<button class="chip" data-act="opt" data-id="${op.id}" aria-pressed="${on}"${dis}>${on ? ICON.check : ICON.plus}${esc(op.name)}</button>`; }).join("")}</div>
@@ -460,7 +507,7 @@ function itemsCard() {
     : `<div class="empty">Henüz kalem yok. Yukarıda bir lift seçip <b>Proformaya Ekle</b> deyin.${isBlank(q) ? `<div><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>` : ""}</div>`}</section>`;
 }
 function formReview() {
-  const q = S.q, st = settings(), mp = q.items.filter(missingPrice).length, iban = st["iban" + q.currency], ok = q.saved && !q.dirty;
+  const q = S.q, st = sellerOf(q), mp = q.items.filter(missingPrice).length, iban = st["iban" + q.currency], ok = q.saved && !q.dirty;
   const chk = (cls, html) => `<span class="check ${cls}">${cls === "ok" ? ICON.check : ICON.alert}<span>${html}</span></span>`;
   let main;
   if (ok) main = outBtns("cur");
@@ -477,10 +524,11 @@ function formReview() {
     <div class="fld s2"><label for="r_dt">Teslim süresi</label><input id="r_dt" data-q="dtime" list="dlDt" value="${esc(q.dtime)}"></div>
     <div class="fld s2"><span class="lbl">&nbsp;</span><span class="hint" style="align-self:center">Şartları listeden seçebilir ya da serbestçe yazabilirsiniz.</span></div>
    </div>
-   <div class="checks">${q.customerId || (q.saved && q.buyer.trim()) ? chk("ok", "Cari: " + esc(q.buyer)) : chk("bad", `Cari kart seçilmedi · <button class="link" data-act="step" data-n="1">Seç</button>`)}
+   <div class="checks">${companyChosen(q) ? chk("ok", "Firma: " + esc(st.company || coName(companyById(q.companyId)))) : chk("bad", `Firma seçilmedi · <button class="link" data-act="step" data-n="1">Seç</button>`)}
+     ${q.customerId || (q.saved && q.buyer.trim()) ? chk("ok", "Cari: " + esc(q.buyer)) : chk("bad", `Cari kart seçilmedi · <button class="link" data-act="step" data-n="1">Seç</button>`)}
      ${q.items.length ? chk("ok", q.items.length + " kalem") : chk("bad", `Kalem yok · <button class="link" data-act="step" data-n="2">Ekle</button>`)}
      ${mp ? chk("warn", mp + " kalemde fiyat eksik") : ""}
-     ${iban ? chk("ok", q.currency + " IBAN tanımlı") : chk("warn", `${q.currency} IBAN tanımlı değil · <a href="#firma">Ekle</a>`)}</div>
+     ${!companyChosen(q) ? "" : iban ? chk("ok", q.currency + " IBAN tanımlı") : chk("warn", `Seçili firmada ${q.currency} IBAN tanımlı değil · ${isAdmin() ? `<a href="#firma">Ekle</a>` : "yöneticiye bildirin"}`)}</div>
    ${dlist("dlPay", PAYMENTS)}${dlist("dlDel", DELIVERY)}${dlist("dlVal", VALIDITY)}${dlist("dlDt", DTIME)}
    <div class="card-f"><button class="btn ghost" data-act="step" data-n="2">${ICON.left} Ürünler</button><div class="grow sum" style="text-align:right">${ok ? "Kayıtlı" : q.saved ? "Kaydedilmemiş değişiklik var" : "Oluşturunca sistem numarası verilir ve cari kartın kayıtlarına eklenir"}</div><div class="btns">${main}</div></div>`;
 }
@@ -601,7 +649,7 @@ function monthChart(months) {
 }
 function accountCard() {
   return `<section class="card" id="hesap"><div class="card-h"><h2 class="ttl">Hesap Ayarları</h2><span class="tag ${S.role === "admin" ? "blue" : "green"}">${S.role === "admin" ? "Yönetici" : "Kullanıcı"}</span>${Store.mode === "demo" ? `<span class="tag amber">Demo · bu tarayıcıda</span>` : ""}</div>
-    <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div class="sysno"><b>${esc(S.user.email)}</b></div></div><div class="fld s2"><span class="lbl">Firma bilgileri</span><a class="btn" href="#firma" style="justify-self:start">${ICON.firm} Firma ve banka bilgilerini düzenle</a></div></div>
+    <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div class="sysno"><b>${esc(S.user.email)}</b></div></div><div class="fld s2"><span class="lbl">Firmalar</span><a class="btn" href="#firma" style="justify-self:start">${ICON.firm} ${isAdmin() ? "Firma ve banka bilgilerini düzenle" : "Firma ve banka bilgilerini gör"}</a></div></div>
     <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
      <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn danger" type="button" data-act="logout">${ICON.out} Çıkış yap</button><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section>`;
 }
@@ -705,23 +753,39 @@ function genPassword() {
 
 /* ---------- ÜRÜNLER sayfası ---------- */
 function pageLib() {
-  const L = S.lib, all = products(), s = L.search.toLowerCase().trim();
+  const L = S.lib, all = products(), s = L.search.toLowerCase().trim(), adm = isAdmin();
   const list = all.filter(p => p.type === L.type && (!s || (p.code + " " + p.name).toLowerCase().includes(s)));
   if (!L.edit || (L.edit.id && !all.some(p => p.id === L.edit.id))) { const sel = pById(L.sel) || list[0]; L.edit = sel ? editBuf(sel) : null; }
+  if (!adm && L.edit && !L.edit.id) L.edit = null;
   const e = L.edit, lift = L.type === "LIFT";
-  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="code">${esc(p.code)}</td><td>${esc(p.name)}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
-  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Kütüphane · ${all.length} ürün</div><h1>Ürünler</h1><p class="lead">Proformada seçilen modeller, kapasiteler, platform ölçüleri, opsiyonlar ve yedek parçalar. Bu liste yalnızca sizin hesabınıza aittir; fiyatlar burada tutulmaz.</p></div>
-     <button class="btn blue" data-act="lib-add">${ICON.plus} Yeni Ürün</button></div>
+  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="thumb">${p.img ? `<img src="${esc(p.img)}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(p.code)}</td><td>${esc(p.name)}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Ortak kütüphane · ${all.length} ürün</div><h1>Ürünler</h1><p class="lead">Proformada seçilen modeller, kapasiteler, platform ölçüleri, opsiyonlar ve yedek parçalar. Kütüphane tüm kullanıcılar için ortaktır ve ${adm ? "yalnızca siz (yönetici) değiştirebilirsiniz" : "yalnızca yönetici değiştirebilir"}. Fiyatlar burada tutulmaz, her proformada girilir.</p></div>
+     ${adm ? `<button class="btn blue" data-act="lib-add">${ICON.plus} Yeni Ürün</button>` : `<span class="tag grey">${ICON.lock} Salt okunur</span>`}</div>
    <div class="lib"><section class="card"><div class="lib-tools"><div class="seg" role="group" aria-label="Ürün türü">${Object.entries(TYPES).map(([k, v]) => `<button data-act="lib-type" data-t="${k}" aria-pressed="${L.type === k}">${v} <span class="muted">${all.filter(p => p.type === k).length}</span></button>`).join("")}</div>
        <div class="ico-in">${ICON.search}<input id="libSearch" data-f="lib.search" value="${esc(L.search)}" placeholder="Kod veya ad ara" autocomplete="off"></div></div>
-     ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Kod</th><th>Ürün adı</th>${lift ? "<th>Kapasite</th><th>Platform ölçüleri</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu grupta ürün yok.</div>`}</section>
-    <section class="card editor">${e ? libEditor(e) : `<div class="empty">Soldan bir ürün seçin.</div>`}</section></div></div>`;
+     ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="thumb"><span class="sr-only">Fotoğraf</span></th><th>Kod</th><th>Ürün adı</th>${lift ? "<th>Kapasite</th><th>Platform ölçüleri</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu grupta ürün yok.</div>`}</section>
+    <section class="card editor">${e ? (adm ? libEditor(e) : libView(e)) : `<div class="empty">Soldan bir ürün seçin.</div>`}</section></div></div>`;
 }
-function editBuf(p) { return {id: p.id, code: p.code, name: p.name, type: p.type, order: p.order, caps: (p.caps || []).join(", "), sizes: liftSizes(p).join(", ")}; }
+function editBuf(p) { return {id: p.id, code: p.code, name: p.name, type: p.type, order: p.order, img: p.img || "", caps: (p.caps || []).join(", "), sizes: liftSizes(p).join(", ")}; }
+const usedIn = id => S.quotes.filter(x => (x.items || []).some(it => it.pid === id)).length;
+function photoBox(img, alt) { return `<figure class="pphoto">${img ? `<img src="${esc(img)}" alt="${esc(alt || "")}">` : `<div class="ph-empty">${ICON.cube}<span>Fotoğraf yok</span></div>`}</figure>`; }
+function libView(e) {
+  const p = pById(e.id) || e, sz = liftSizes(p);
+  return `<div class="card-h"><h2 class="ttl">Ürün Kartı</h2><span class="tag grey">${esc(TYPES[p.type] || p.type)}</span></div>
+   ${photoBox(p.img, p.code)}
+   <div class="model-card" style="margin:16px 0"><b>${esc(p.code)}</b><span>${esc(p.name)}</span>${p.type === "LIFT" ? `<small>${capRange(p)}${sz.length ? " · katalog: " + sz.map(x => x.replace("x", "×")).join(", ") : ""}</small>` : ""}</div>
+   ${p.type === "LIFT" ? `<p class="muted small" style="margin:0">${usedIn(p.id)} proformanızda kullanıldı.</p>` : ""}
+   <p class="hint" style="margin:12px 0 0">${ICON.lock} Bu kütüphane ortaktır; ürünleri yalnızca yönetici ekleyip değiştirebilir.</p>`;
+}
 function libEditor(e) {
   const f = (id, k, label, attrs = "") => `<div class="fld s4"><label for="${id}">${label}</label><input id="${id}" data-le="${k}" value="${esc(e[k])}"${attrs}></div>`;
+  const def = catalogImg(e);
   return `<div class="card-h"><h2 class="ttl">${e.id ? "Ürün Kartı" : "Yeni Ürün"}</h2>${e.id ? `<span class="tag grey">${esc(TYPES[e.type] || e.type)}</span>` : ""}</div>
-   ${e.type === "LIFT" && e.code ? `<div class="model-card" style="margin:0 0 18px"><b>${esc(e.code)}</b><span>${esc(e.name)}</span><small>${S.quotes.filter(x => (x.items || []).some(it => it.pid === e.id)).length} proformada kullanıldı</small></div>` : ""}
+   <div class="pphoto-ed">${photoBox(e.img, e.code)}
+     <div class="btns"><button class="btn sm" data-act="lib-img-up">${ICON.plus} ${e.img ? "Fotoğrafı değiştir" : "Fotoğraf yükle"}</button>${e.img ? `<button class="btn ghost sm" data-act="lib-img-clear">${ICON.x} Kaldır</button>` : ""}${def && def !== e.img ? `<button class="btn ghost sm" data-act="lib-img-def">Katalog fotoğrafı</button>` : ""}
+       <input type="file" id="libImg" accept="image/png,image/jpeg,image/webp" data-up="lib" hidden></div>
+     <p class="hint" style="margin:0">Fotoğraf 640 piksele küçültülür; değişiklik “Kaydet” ile tüm kullanıcılara yansır.</p></div>
+   ${e.type === "LIFT" && e.code && e.id ? `<div class="model-card" style="margin:0 0 18px"><b>${esc(e.code)}</b><span>${esc(e.name)}</span><small>${usedIn(e.id)} proformanızda kullanıldı</small></div>` : ""}
    <div class="fgrid">
     <div class="fld s2"><label for="le_code">Kod</label><input id="le_code" data-le="code" value="${esc(e.code)}" placeholder="Örn. NDL 5010"></div>
     <div class="fld s2"><label for="le_type">Tür</label><select id="le_type" data-le="type">${Object.entries(TYPES).map(([k, v]) => opt(k, e.type, v)).join("")}</select></div>
@@ -729,22 +793,48 @@ function libEditor(e) {
     ${e.type === "LIFT" ? f("le_caps", "caps", "Kapasiteler <em>kg, virgülle</em>", ' placeholder="2000, 2500" inputmode="numeric"') + f("le_sizes", "sizes", "Platform ölçüleri <em>mm, virgülle</em>", ' placeholder="2400x1800, 2500x1800"') : ""}
    </div>
    ${e.type === "LIFT" ? `<p class="hint" style="margin:12px 0 0">Ölçüler yapılandırıcıda “Katalog ölçüleri” olarak öne çıkar; standart ölçüler ve özel boyut her zaman seçilebilir.</p>` : ""}
-   <div class="card-f">${e.id ? `<button class="btn ghost danger" data-act="lib-del" data-id="${e.id}">${ICON.trash} Sil</button>` : `<button class="btn ghost" data-act="lib-cancel">Vazgeç</button>`}<div class="btns"><button class="btn blue" data-act="lib-save">${ICON.check} Kaydet</button></div></div>`;
+   <div class="card-f">${e.id ? `<button class="btn ghost danger" data-act="lib-del" data-id="${e.id}">${ICON.trash} Sil</button>` : `<button class="btn ghost" data-act="lib-cancel">Vazgeç</button>`}<div class="grow muted small">Değişiklik tüm kullanıcıların kütüphanesine yansır.</div><div class="btns"><button class="btn blue" data-act="lib-save">${ICON.check} Kaydet</button></div></div>`;
 }
 
-/* ---------- FİRMA sayfası ---------- */
+/* ---------- FİRMALAR sayfası (ortak; yalnızca yönetici değiştirir) ---------- */
+const CO_LABELS = {company: "Firma unvanı", contact: "Telefon ve e-posta satırı", address: "Adres", since: "Logo altı yazı", brandNote: "NDL logosu altı yazı",
+  warranty: "Garanti notu", origin: "Menşe", hs: "GTİP (HS code)", prefix: "Numara öneki", beneficiary: "Lehtar (beneficiary)", bank: "Banka", branch: "Şube",
+  ibanUSD: "USD IBAN", ibanEUR: "EUR IBAN", ibanTRY: "TRY IBAN", swift: "SWIFT"};
+function coBuf(c) { const e = {id: "", name: "", logo: "", order: 0}; COMPANY_FIELDS.forEach(k => { e[k] = ""; }); return Object.assign(e, c ? JSON.parse(JSON.stringify(c)) : {prefix: "PI"}); }
 function pageFirm() {
-  if (!S.firm) S.firm = Object.assign({}, settings());
-  const F = S.firm, f = (k, label, cls = "", attrs = "") => `<div class="fld ${cls}"><label for="s_${k}">${label}</label><input id="s_${k}" data-fe="${k}" value="${esc(F[k] || "")}"${attrs}></div>`;
-  return `<div class="page"><div><div class="eyebrow soft">Ayarlar</div><h1>Firma Bilgileri</h1><p class="lead">Bu bilgiler proformanın üst ve alt kısmında görünür ve yalnızca sizin hesabınızda saklanır. IBAN, proformanın para birimine göre seçilir.</p></div>
-   <section class="card"><div class="card-h"><h2 class="ttl">Firma Bilgileri</h2></div><div class="fgrid">
-     ${f("company", "Firma unvanı", "s2", ' placeholder="Firma unvanı" autocomplete="organization"')}${f("contact", "Telefon ve e-posta satırı", "s2", ' placeholder="Tel: … Email: …"')}${f("address", "Adres", "s4")}</div>
-    <div class="card-h" style="margin-top:26px"><h2 class="ttl">Proforma</h2></div><div class="fgrid">
-     ${f("warranty", "Garanti notu <em>kırmızı, ortalı basılır</em>", "s4", ' placeholder="Örn. ürünlerinizin garanti açıklaması"')}${f("origin", "Menşe", "", ' placeholder="Örn. TÜRKİYE"')}${f("hs", "GTİP (HS code)", "", ' inputmode="numeric" placeholder="Ürünlerinizin GTİP kodu"')}${f("prefix", "Numara öneki", "", ' placeholder="PI"')}</div>
-    <div class="card-h" style="margin-top:26px"><h2 class="ttl">Banka Bilgileri</h2></div><div class="fgrid">
-     ${f("beneficiary", "Lehtar (beneficiary)", "s2")}${f("bank", "Banka")}${f("branch", "Şube")}${f("ibanUSD", "USD IBAN", "s2", ' spellcheck="false"')}${f("ibanEUR", "EUR IBAN", "s2", ' spellcheck="false"')}${f("ibanTRY", "TRY IBAN", "s2", ' spellcheck="false"')}${f("swift", "SWIFT", "", ' spellcheck="false"')}</div>
-    <div class="card-f"><div class="grow muted small">Değişiklikler yeni ve açık proformalara yansır.</div><div class="btns"><button class="btn ghost" data-act="firm-reset">Vazgeç</button><button class="btn blue" data-act="firm-save">${ICON.check} Kaydet</button></div></div></section>
-</div>`;
+  const C = S.co, adm = isAdmin(), list = S.companies;
+  if (!C.edit || (C.edit.id && !list.some(c => c.id === C.edit.id))) { const sel = list.find(c => c.id === C.sel) || list[0]; C.edit = sel ? coBuf(sel) : null; }
+  if (!adm && C.edit && !C.edit.id) C.edit = null;
+  const e = C.edit;
+  const cards = list.map(c => `<button class="pick co${e && e.id === c.id ? " on" : ""}" data-act="co-sel" data-id="${esc(c.id)}">${coLogo(c)}<span class="pk-main"><b>${esc(coName(c))}</b><span>${esc(c.company || "—")}${c.prefix ? " · önek " + esc(c.prefix) : ""}</span></span>${ICON.right}</button>`).join("");
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Ayarlar · ${list.length} firma</div><h1>Firmalar</h1><p class="lead">Proformayı kesen firma. Her proformada bu listeden biri seçilir; unvan, adres, logo ve banka bilgileri proformaya bu kayıttan basılır. Liste tüm kullanıcılar için ortaktır ve ${adm ? "yalnızca siz (yönetici) değiştirebilirsiniz" : "yalnızca yönetici değiştirebilir"}.</p></div>
+     ${adm ? `<button class="btn blue" data-act="co-add">${ICON.plus} Yeni Firma</button>` : `<span class="tag grey">${ICON.lock} Salt okunur</span>`}</div>
+   <div class="lib cari"><section class="card">${list.length ? `<div class="pick-list">${cards}</div>` : `<div class="empty">${adm ? "Henüz firma yok. Proforma kesen firmaları (ör. Düelsan, Ahkos Otomotiv) ekleyin." : "Yönetici henüz firma tanımlamadı."}${adm ? `<div><button class="btn blue" data-act="co-add">${ICON.plus} Yeni Firma</button></div>` : ""}</div>`}</section>
+    <section class="card editor">${e ? (adm ? coEditor(e) : coView(e)) : `<div class="empty">${adm ? "Soldan bir firma seçin ya da yeni firma ekleyin." : "Görüntülenecek firma yok."}</div>`}</section></div></div>`;
+}
+function coView(e) {
+  const row = k => e[k] ? kv(CO_LABELS[k], esc(e[k])) : "";
+  return `<div class="card-h"><h2 class="ttl">${esc(coName(e))}</h2></div>
+   <div class="co-sum" style="margin-bottom:16px">${coLogo(e)}<div><b>${esc(e.company)}</b><span>${esc([e.address, e.contact].filter(Boolean).join(" · "))}</span></div></div>
+   <div class="kvs">${["since", "brandNote", "warranty", "origin", "hs", "prefix", "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift"].map(row).join("")}</div>
+   <p class="hint" style="margin:14px 0 0">${ICON.lock} Firma bilgilerini yalnızca yönetici değiştirebilir.</p>`;
+}
+function coEditor(e) {
+  const f = (k, cls = "", attrs = "", em = "") => `<div class="fld ${cls}"><label for="co_${k}">${CO_LABELS[k] || k}${em ? ` <em>${em}</em>` : ""}</label><input id="co_${k}" data-coe="${k}" value="${esc(e[k] || "")}"${attrs}></div>`;
+  return `<div class="card-h"><h2 class="ttl">${e.id ? "Firma Kaydı" : "Yeni Firma"}</h2></div>
+   <div class="fgrid">
+     <div class="fld s2"><label for="co_name">Kayıt adı <em>seçim listesinde görünür</em></label><input id="co_name" data-coe="name" value="${esc(e.name || "")}" placeholder="Örn. Düelsan"></div>
+     <div class="fld s2"><span class="lbl">Logo <em>proformanın sol üstüne basılır</em></span><div class="co-logo-ed">${coLogo(e)}<button class="btn sm" data-act="co-logo-up">${ICON.plus} ${e.logo ? "Değiştir" : "Logo yükle"}</button>${e.logo ? `<button class="btn ghost sm" data-act="co-logo-clear">${ICON.x} Kaldır</button>` : ""}<input type="file" id="coLogo" accept="image/png,image/jpeg,image/webp" data-up="co" hidden></div></div>
+   </div>
+   <div class="card-h" style="margin-top:22px"><h2 class="ttl">Proforma Başlığı</h2></div><div class="fgrid">
+     ${f("company", "s2", ' placeholder="Firma unvanı" autocomplete="organization"')}${f("contact", "s2", ' placeholder="Tel: … Email: …"')}${f("address", "s4")}
+     ${f("since", "s2", ' placeholder="Örn. Since 1982..."', "logonun altında, küçük")}${f("brandNote", "s2", ' placeholder="Örn. The brand of Düelsan"', "sağ üstte")}</div>
+   <div class="card-h" style="margin-top:22px"><h2 class="ttl">Proforma</h2></div><div class="fgrid">
+     ${f("warranty", "s4", ' placeholder="Örn. ürünlerin garanti açıklaması"', "kırmızı, ortalı basılır")}${f("origin", "", ' placeholder="Örn. TÜRKİYE"')}${f("hs", "", ' inputmode="numeric"')}${f("prefix", "s2", ' placeholder="PI" maxlength="8" style="text-transform:uppercase"', "ör. DU → DU2026/0012")}</div>
+   <p class="hint" style="margin:8px 0 0">Sıra numarası tüm firmalarda ortaktır; önek yalnızca numaranın başını belirler.</p>
+   <div class="card-h" style="margin-top:22px"><h2 class="ttl">Banka Bilgileri</h2></div><div class="fgrid">
+     ${f("beneficiary", "s2")}${f("bank")}${f("branch")}${f("ibanUSD", "s2", ' spellcheck="false"')}${f("ibanEUR", "s2", ' spellcheck="false"')}${f("ibanTRY", "s2", ' spellcheck="false"')}${f("swift", "", ' spellcheck="false"')}</div>
+   <div class="card-f">${e.id ? `<button class="btn ghost danger" data-act="co-del" data-id="${esc(e.id)}">${ICON.trash} Sil</button>` : `<button class="btn ghost" data-act="co-cancel">Vazgeç</button>`}<div class="grow muted small">Kesilmiş proformalar değişmez; değişiklik yeni proformalara yansır.</div><div class="btns"><button class="btn blue" data-act="co-save">${ICON.check} Kaydet</button></div></div>`;
 }
 
 /* ---------- onay penceresi ---------- */
@@ -762,7 +852,7 @@ const cariChosen = q => !!q.customerId || (q.saved && !!String(q.buyer).trim());
 /* uygulama içi geçişler açık proformayı korur; menüden Proforma'ya gelince kayıtlı ve değişmemiş proforma yerine yenisi açılır */
 function go(v) { S.keepQ = true; if (location.hash !== "#" + v) location.hash = v; else { S.keepQ = false; S.view = v; renderSide(); renderMain(); } }
 function setStep(n) {
-  if (n > 1 && S.q && !cariChosen(S.q) && !S.q.sample) { if (S.step !== 1 || S.view !== "proforma") { S.step = 1; if (S.view !== "proforma") go("proforma"); else renderMain(); } toast("Önce bir cari kart seçin"); return; }
+  if (n > 1 && S.q && step1Missing(S.q).length && !S.q.sample) { if (S.step !== 1 || S.view !== "proforma") { S.step = 1; if (S.view !== "proforma") go("proforma"); else renderMain(); } toast(step1Msg(S.q)); return; }
   S.step = n; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0); }
 function startNew(prefill) {
   S.q = newQuote(); if (prefill) Object.assign(S.q, prefill);
@@ -782,11 +872,13 @@ function quoteDoc(q) {
 }
 async function createProforma(btn) {
   const q = S.q;
-  if (!q.customerId && !(q.saved && q.buyer.trim())) { toast(q.sample ? "Örnek şablonu kullanmak için bir cari kart seçin" : "Önce bir cari kart seçin"); setStep(1); return; }
+  if (step1Missing(q).length) { toast(q.sample ? "Örnek şablonu kullanmak için firmayı ve cari kartı seçin" : step1Msg(q)); S.step = 1; S.pick.co = false; renderMain(); return; }
   if (!q.items.length) { toast("Önce en az bir kalem ekleyin"); setStep(2); return; }
   busy(btn, true);
   try {
-    const isNew = !q.saved, d = quoteDoc(q);
+    const isNew = !q.saved, co = companyById(q.companyId);
+    if (isNew && co) applyCompany(q, co);   /* yeni proforma firmanın o anki bilgileriyle kesilir */
+    const d = quoteDoc(q);
     if (isNew) { d.no = ""; delete d.sysNo; }
     const stored = (await Store.put("quote", q.id, d)) || d;
     if (!stored.no) throw new Error("Proforma numarası alınamadı");
@@ -808,11 +900,13 @@ async function makeFile(kind, src, btn) {
     let blob;
     if (kind === "pdf") {
       if (!window.pdfMake) throw new Error("PDF modülü yüklenemedi; sayfayı yenileyin");
-      if (!LOGO_D) await loadLogos();
+      if (!LOGO_N) await loadLogos();
+      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar;
       blob = await new Promise((res, rej) => { try { pdfMake.createPdf(pdfDoc(q)).getBlob(res); } catch (e) { rej(e); } });
     } else {
       if (!window.ExcelJS) { toast("Excel hazırlanıyor…"); await loadScript(XLSX_SRC); }
-      if (!LOGO_D) await loadLogos();
+      if (!LOGO_N) await loadLogos();
+      const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar;
       const wb = await buildXlsx(window.ExcelJS, q);
       blob = new Blob([await wb.xlsx.writeBuffer()], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     }
@@ -823,14 +917,16 @@ async function makeFile(kind, src, btn) {
 }
 async function saveProduct(btn) {
   const e = S.lib.edit; if (!e) return;
+  if (!isAdmin()) { toast("Ürün kütüphanesini yalnızca yönetici değiştirebilir"); return; }
   if (!String(e.code).trim() || !String(e.name).trim()) { toast("Kod ve ürün adı boş olamaz"); return; }
   const id = e.id || ("p-" + rid()), order = e.order || Math.max(0, ...products().map(p => p.order || 0)) + 1;
   const d = {code: String(e.code).trim(), name: String(e.name).trim(), type: e.type, order,
     caps: String(e.caps || "").split(/[,;\s]+/).map(Number).filter(n => n > 0)};
   if (e.type === "LIFT") d.sizes = String(e.sizes || "").split(/[,;\s]+/).map(s => parseSize(s.replace("×", "x"))).filter(Boolean).map(m => m[0] + "x" + m[1]);
+  if (e.img) d.img = e.img;
   busy(btn, true);
   try {
-    await Store.put("product", id, d);
+    await Store.putShared("product", id, d);
     if (!S.products.length) S.products = CATALOG.map(p => ({...p}));
     upsertLocal(S.products, Object.assign({id}, d)); S.products.sort((a, b) => (a.order || 0) - (b.order || 0));
     S.lib.sel = id; S.lib.type = d.type; S.lib.edit = null; toast("Ürün kaydedildi"); renderMain();
@@ -852,12 +948,17 @@ async function adminAction(fn, args, okMsg) {
   try { await Store.rpc(fn, args); toast(okMsg); } catch (e) { toast(authError(e)); }
   await loadUsers();
 }
-async function saveFirm(btn) {
+async function saveCompany(btn) {
+  const e = S.co.edit; if (!e) return;
+  if (!isAdmin()) { toast("Firmaları yalnızca yönetici değiştirebilir"); return; }
+  if (!String(e.company || "").trim()) { toast("Firma unvanı boş olamaz"); const n = $("co_company"); if (n) n.focus(); return; }
+  const id = e.id || ("firma-" + rid()), d = {};
+  ["name", "logo", ...COMPANY_FIELDS].forEach(k => { const v = typeof e[k] === "string" ? e[k].trim() : e[k]; if (v) d[k] = v; });
+  d.prefix = String(d.prefix || "PI").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "PI";
+  d.name = d.name || d.company; d.order = e.order || Math.max(0, ...S.companies.map(c => c.order || 0)) + 1;
   busy(btn, true);
-  try {
-    const st = Object.assign({}, S.settings, S.firm, {seeded: true}); Object.keys(st).forEach(k => { if (typeof st[k] === "string") st[k] = st[k].trim(); });
-    await Store.put("settings", "main", st); S.settings = st; S.firm = null; toast("Firma bilgileri kaydedildi"); renderMain();
-  } catch (e) { toast("Kaydedilemedi: " + authError(e)); busy(btn, false); }
+  try { await Store.putShared("company", id, d); upsertLocal(S.companies, Object.assign({id}, d)); S.companies.sort(coSort); S.co.sel = id; S.co.edit = null; toast(d.name + " kaydedildi"); renderMain(); }
+  catch (err) { toast("Kaydedilemedi: " + authError(err)); busy(btn, false); }
 }
 
 /* ---------- olaylar ---------- */
@@ -883,11 +984,19 @@ document.addEventListener("input", e => {
   if (d.f) { const [a, b] = d.f.split("."); if (b) S[a][b] = t.value; else S[a] = t.value; if (d.f === "qSearch" && $("gSearch")) $("gSearch").value = t.value; renderMain(); return; }
   if (d.ce) { if (S.cariEdit) S.cariEdit[d.ce] = t.value; if (d.ce === "name" && S.cariTried) t.classList.toggle("need", !t.value.trim()); return; }
   if (d.le) { S.lib.edit[d.le] = t.value; if (d.le === "type") renderMain(); return; }
-  if (d.fe) { S.firm[d.fe] = t.value; return; }
+  if (d.coe) { if (S.co.edit) S.co.edit[d.coe] = t.value; return; }
   if (d.an) { S.annEdit[d.an] = t.value; return; }
 });
 document.addEventListener("change", e => {
   const t = e.target, d = t.dataset, c = S.cfg;
+  if (d.up) {
+    const file = t.files && t.files[0]; t.value = ""; if (!file || !isAdmin()) return;
+    const lib = d.up === "lib";
+    shrinkImage(file, lib ? 640 : 480, lib ? "image/jpeg" : "image/png", 0.82)
+      .then(u => { if (lib && S.lib.edit) S.lib.edit.img = u; else if (!lib && S.co.edit) S.co.edit.logo = u; renderMain(); toast((lib ? "Fotoğraf" : "Logo") + " eklendi · kaydetmeyi unutmayın"); })
+      .catch(err => toast((err && err.message) || "Görsel eklenemedi"));
+    return;
+  }
   if (d.c && t.tagName === "SELECT") {
     if (d.c === "pid") {
       c.pid = t.value; const p = pById(t.value);
@@ -952,7 +1061,7 @@ document.addEventListener("click", async e => {
     case "go": go(b.dataset.v); break;
     case "step": setStep(+b.dataset.n); break;
     case "new": guard("Yeni proforma açılırsa", () => startNew()); break;
-    case "new-same": { const c = cariById(q.customerId); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); setStep(2); toast(c.name + " için yeni proforma açıldı"); }); break; }
+    case "new-same": { const c = cariById(q.customerId); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); S.step = 1; renderMain(); toast(c.name + " için yeni proforma · şimdi firmayı seçin"); }); break; }
     case "tpl-open": guard("Örnek şablon açılırsa", () => { S.q = templateQuote(); S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = 3; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Örnek şablon açıldı · bilgiler hayalidir"); }); break;
     case "tpl-clear": startNew(); break;
     case "undo": if (S.undo) { S.undo(); S.undo = null; $("toast").hidden = true; } break;
@@ -997,7 +1106,10 @@ document.addEventListener("click", async e => {
       ask({title: "Proforma silinsin mi?", msg: `<b>${esc(x.no)}</b> · ${esc(x.buyer || "")} kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Sil", danger: true,
         fn: async () => { try { await Store.del("quote", x.id); S.quotes = S.quotes.filter(z => z.id !== x.id); if (S.q.id === x.id) { S.q.saved = false; saveDraft(); } toast(x.no + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
     /* cari kart seçimi (proforma 1. adım) */
-    case "pick": { const c = cariById(b.dataset.id); if (!c) break; applyCari(q, c); S.pick = {search: "", mode: ""}; touch(); toast(c.name + " seçildi"); setStep(2); break; }
+    case "pick": { const c = cariById(b.dataset.id); if (!c) break; applyCari(q, c); S.pick = {search: "", mode: ""}; touch(); if (companyChosen(q)) { toast(c.name + " seçildi"); setStep(2); } else { renderMain(); toast(c.name + " seçildi · şimdi firmayı seçin"); } break; }
+    case "pick-co": { const c = companyById(b.dataset.id); if (!c) break; applyCompany(q, c); S.pick.co = false; touch(); if (cariChosen(q)) { toast(coName(c) + " seçildi"); setStep(2); } else { renderMain(); toast(coName(c) + " seçildi · şimdi cari kartı seçin"); } break; }
+    case "pick-co-change": S.pick.co = true; renderMain(); break;
+    case "pick-co-cancel": S.pick.co = false; renderMain(); break;
     case "pick-new": S.cariEdit = normCari({code: nextCariCode()}); S.cariTried = false; S.pick.mode = "new"; renderMain(); setTimeout(() => { const n = $("ce_name"); if (n) n.focus(); }, 0); break;
     case "pick-edit": { const c = cariById(q.customerId); if (!c) break; S.cariEdit = {...c}; S.cariTried = false; S.pick.mode = "edit"; renderMain(); break; }
     case "pick-change": S.pick.mode = "change"; renderMain(); break;
@@ -1008,7 +1120,7 @@ document.addEventListener("click", async e => {
     case "cari-new": S.cariEdit = normCari({code: nextCariCode()}); S.cariTried = false; S.cari.sel = null; if (S.view !== "alicilar") go("alicilar"); renderMain(); setTimeout(() => { const n = $("ce_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "cari-cancel": S.cariEdit = null; renderMain(); break;
     case "cari-save": { const c = await saveCari(b); if (c) { S.cari.sel = c.id; S.cariEdit = {...c}; renderMain(); } break; }
-    case "cari-quote": { const c = cariById(b.dataset.id); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); setStep(2); toast(c.name + " için yeni proforma açıldı"); }); break; }
+    case "cari-quote": { const c = cariById(b.dataset.id); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); S.step = 1; renderMain(); toast(c.name + " için yeni proforma · şimdi firmayı seçin"); }); break; }
     case "cari-del": { const c = cariById(b.dataset.id); if (!c) break; const n = cariStats(c).n;
       ask({title: "Cari kart silinsin mi?", msg: `<b>${esc(c.code)}</b> · ${esc(c.name)} kartı kalıcı olarak silinir.${n ? ` Bu karta ait ${n} proforma silinmez; bilgileri proformalarda kalır.` : ""}`, yes: "Sil", danger: true,
         fn: async () => { try { await Store.del("customer", c.id); S.customers = S.customers.filter(z => z.id !== c.id); S.cariEdit = null; S.cari.sel = null; toast(c.name + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
@@ -1036,15 +1148,26 @@ document.addEventListener("click", async e => {
     /* ürünler */
     case "lib-type": S.lib.type = b.dataset.t; S.lib.sel = null; S.lib.edit = null; renderMain(); break;
     case "lib-sel": S.lib.sel = b.dataset.id; S.lib.edit = editBuf(pById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break;
-    case "lib-add": S.lib.edit = {id: "", code: "", name: "", type: S.lib.type, caps: "", sizes: ""}; renderMain(); setTimeout(() => { const n = $("le_code"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
+    case "lib-img-up": { const i = $("libImg"); if (i) i.click(); break; }
+    case "lib-img-clear": if (S.lib.edit) { S.lib.edit.img = ""; renderMain(); } break;
+    case "lib-img-def": if (S.lib.edit) { S.lib.edit.img = catalogImg(S.lib.edit); renderMain(); } break;
+    case "lib-add": if (!isAdmin()) break; S.lib.edit = {id: "", code: "", name: "", type: S.lib.type, caps: "", sizes: ""}; renderMain(); setTimeout(() => { const n = $("le_code"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "lib-cancel": S.lib.edit = null; renderMain(); break;
     case "lib-save": saveProduct(b); break;
     case "lib-del": { const p = pById(b.dataset.id); if (!p) break;
-      ask({title: "Ürün silinsin mi?", msg: `<b>${esc(p.code)}</b> · ${esc(p.name)} kütüphanenizden kaldırılır. Kayıtlı proformalar etkilenmez.`, yes: "Sil", danger: true,
-        fn: async () => { try { await Store.del("product", p.id); S.products = S.products.filter(z => z.id !== p.id); S.lib.sel = null; S.lib.edit = null; toast("Ürün silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
-    /* firma */
-    case "firm-save": saveFirm(b); break;
-    case "firm-reset": S.firm = null; renderMain(); break;
+      if (!isAdmin()) break;
+      ask({title: "Ürün silinsin mi?", msg: `<b>${esc(p.code)}</b> · ${esc(p.name)} ortak kütüphaneden kaldırılır; hiçbir kullanıcı artık seçemez. Kayıtlı proformalar etkilenmez.`, yes: "Sil", danger: true,
+        fn: async () => { try { await Store.delShared("product", p.id); S.products = S.products.filter(z => z.id !== p.id); S.lib.sel = null; S.lib.edit = null; toast("Ürün silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
+    /* firmalar */
+    case "co-sel": S.co.sel = b.dataset.id; S.co.edit = coBuf(companyById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break;
+    case "co-add": if (!isAdmin()) break; S.co.edit = coBuf(null); renderMain(); setTimeout(() => { const n = $("co_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
+    case "co-cancel": S.co.edit = null; renderMain(); break;
+    case "co-save": saveCompany(b); break;
+    case "co-logo-up": { const i = $("coLogo"); if (i) i.click(); break; }
+    case "co-logo-clear": if (S.co.edit) { S.co.edit.logo = ""; renderMain(); } break;
+    case "co-del": { const c = companyById(b.dataset.id); if (!c || !isAdmin()) break;
+      ask({title: "Firma silinsin mi?", msg: `<b>${esc(coName(c))}</b> listeden kaldırılır ve yeni proformalarda seçilemez. Bu firmayla kesilmiş proformalar kendi kopyalarını korur.`, yes: "Sil", danger: true,
+        fn: async () => { try { await Store.delShared("company", c.id); S.companies = S.companies.filter(z => z.id !== c.id); S.co.sel = null; S.co.edit = null; toast("Firma silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
   }
 });
 
@@ -1055,7 +1178,7 @@ function fromHash() {
   const prev = S.view, keep = S.keepQ; S.keepQ = false;
   const h = location.hash.slice(1); S.view = VIEWS.includes(h) ? h : "pano"; S.menu = null;
   if (S.view === "proforma" && prev !== "proforma" && !keep && S.q && S.q.saved && !S.q.dirty) { S.q = newQuote(); S.cfg = newCfg(); S.cfgTried = false; S.step = 1; S.openRows.clear(); S.pick = {search: "", mode: ""}; saveDraft(); updateCart(); }
-  if (S.view !== "firma") S.firm = null;
+  if (S.view !== "firma" && S.co.edit && !S.co.edit.id) S.co.edit = null;
   if (S.view === "yonetim" && S.role !== "admin") S.view = "pano";
   if (S.view === "yonetim") loadUsers(true);
   if (S.view !== "alicilar" && S.view !== "proforma") { S.cariEdit = null; S.pick.mode = ""; }
