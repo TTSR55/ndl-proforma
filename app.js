@@ -335,7 +335,11 @@ function renderSide() {
   s.innerHTML = nav.map(([v, l, ic]) => `<a href="#${v}" data-v="${v}"${S.view === v ? ' aria-current="page"' : ""}>${ICON[ic]}<span>${l}</span>${v === "yonetim" && S.pendingCount ? `<i class="nbadge" aria-label="${S.pendingCount} onay bekleyen">${S.pendingCount}</i>` : ""}</a>`).join("")
     + `<span class="grow"></span>${Store.mode === "demo" ? `<span class="mode">Demo</span>` : ""}`;
 }
-function updateCart() { const c = $("cartCount"), t = $("cartTotal"); if (c) c.textContent = S.q.items.length; if (t) t.textContent = money(qTotal(S.q), S.q.currency); }
+function updateCart() {
+  const c = $("cartCount"), t = $("cartTotal"), n = S.q.items.length;
+  if (c) { const was = Number(c.textContent) || 0; c.textContent = n; if (n > was) { c.classList.remove("bump"); void c.offsetWidth; c.classList.add("bump"); } }
+  if (t) t.textContent = money(qTotal(S.q), S.q.currency);
+}
 /* yumuşak kaydırma yalnızca hareket azaltma istenmediğinde (stil dosyasındaki kural JavaScript kaydırmasına ulaşmaz) */
 const scrollMode = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
 /* Odaklı öğeyi yeniden çizimden sonra bulmak için seçici: kimlik, yoksa data-act ve ilgili data-* değerleri */
@@ -681,7 +685,11 @@ function syncOpenQuote(x) {
 async function setStage(id, k) {
   const x = S.quotes.find(z => z.id === id); if (!x || !STAGE_BY[k] || stageOf(x) === k) return;
   const prev = {stage: x.stage, stageAt: x.stageAt, stageLog: x.stageLog}, at = Date.now();
-  const ok = await putQuoteRow(Object.assign(JSON.parse(JSON.stringify(x)), {stage: k, stageAt: at, stageLog: [...stageLogOf(x), {k, at}].slice(-30)}));
+  S.qFlash = id; clearTimeout(setStage._t); setStage._t = setTimeout(() => { if (S.qFlash === id) S.qFlash = null; }, 1700);
+  const pending = putQuoteRow(Object.assign(JSON.parse(JSON.stringify(x)), {stage: k, stageAt: at, stageLog: [...stageLogOf(x), {k, at}].slice(-30)}));
+  const row = [...document.querySelectorAll(".qtbl tr.row.flash")].find(r => r.offsetParent !== null);
+  if (row) row.scrollIntoView({block: "nearest", behavior: scrollMode()});
+  const ok = await pending;
   if (ok) toast(`${x.no || "Proforma"} · ${STAGE_BY[k].l}`, () => {
     const cur = S.quotes.find(z => z.id === id); if (!cur) return;
     const y = JSON.parse(JSON.stringify(cur)); ["stage", "stageAt", "stageLog"].forEach(f => { if (prev[f] === undefined) delete y[f]; else y[f] = JSON.parse(JSON.stringify(prev[f])); });
@@ -712,7 +720,7 @@ function stageStrip(base) {
 function quoteRow(x) {
   const open = S.openQ.has(x.id), items = x.items || [], cari = x.customerId && cariById(x.customerId), vu = validUntil(x);
   const log = stageLogOf(x).filter(e => e.at).map(e => `${esc(STAGE_BY[e.k].l)} <span class="muted">${fmtTs(e.at)}</span>`).join(" → ");
-  return `<tr class="row"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")}<span class="m-only"> · ${fmtDate(x.date)}</span></span><span class="m-amt">${money(x.total, x.currency)}</span></td>
+  return `<tr class="row${S.qFlash === x.id ? " flash" : ""}"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")}<span class="m-only"> · ${fmtDate(x.date)}</span></span><span class="m-amt">${money(x.total, x.currency)}</span></td>
       <td><b>${esc(x.buyer || "—")}</b><span class="sub">${cari ? esc(cari.code) + " · " : ""}${esc([x.city, x.country].filter(Boolean).join(", ") || x.address || "")}</span><div class="stg-m">${stagePick(x)}${expiryTag(x)}</div></td>
       <td class="stg-cell">${stagePick(x)}<span class="sub">${x.stageAt ? `${esc(ago(x.stageAt))} güncellendi` : ""}${expiryTag(x)}</span></td>
       <td class="c k-col"><span class="tag blue">${items.length} kalem</span></td><td class="r strong k-col">${money(x.total, x.currency)}</td>
@@ -812,10 +820,11 @@ function monthChart(months) {
   const total = months.reduce((a, m) => a + m.n, 0);
   if (!total) return `<div class="empty">Son 6 ayda proforma yok. Oluşturdukça burada aylık dağılım görünür.</div>`;
   const max = Math.max(...months.map(m => m.n)), top = max <= 4 ? 4 : Math.ceil(max / 4) * 4, ticks = [top, top / 2, 0];
-  return `<div class="mchart" role="group" aria-label="Son 6 ayın aylık proforma sayısı">
+  const grow = !S.chartShown; S.chartShown = true;
+  return `<div class="mchart${grow ? " grow" : ""}" role="group" aria-label="Son 6 ayın aylık proforma sayısı">
     <div class="mc-grid">${ticks.map(t => `<div class="mc-line" style="bottom:${t / top * 100}%"><span>${fmtInt(t)}</span></div>`).join("")}</div>
     <div class="mc-bars">${months.map((m, i) => { const last = i === months.length - 1, name = `${m.full}: ${m.n} proforma${m.n ? ", " + byCurText(m.by) : ""}`;
-      return `<button type="button" class="mc-col" data-act="mc-tip" data-i="${i}" aria-label="${esc(name)}"><span class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%">${last && m.n ? `<em class="num" aria-hidden="true">${m.n}</em>` : ""}</span>
+      return `<button type="button" class="mc-col" data-act="mc-tip" data-i="${i}" aria-label="${esc(name)}"><span class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%;--i:${i}">${last && m.n ? `<em class="num" aria-hidden="true">${m.n}</em>` : ""}</span>
       <span class="mc-tip" aria-hidden="true"><b>${esc(m.full)}</b><span>${m.n} proforma</span>${m.n ? `<span>${byCurText(m.by)}</span>` : ""}</span><span class="mc-x" aria-hidden="true">${esc(m.label)}</span></button>`; }).join("")}</div></div>`;
 }
 function accountCard() {
@@ -1032,7 +1041,7 @@ function go(v) { S.keepQ = true; if (location.hash !== "#" + v) location.hash = 
 function setStep(n) {
   if (n > 1 && S.q && step1Missing(S.q).length && !S.q.sample) { if (S.step !== 1 || S.view !== "proforma") { S.step = 1; if (S.view !== "proforma") go("proforma"); else renderMain(); } toast(step1Msg(S.q)); return; }
   const moved = S.step !== n; S.step = n; S.hsErr = ""; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0);
-  if (moved) focusHeading("#formCard h2"); }
+  if (moved) { focusHeading("#formCard h2"); ["formCard", "bottomCard"].forEach(id => { const el = $(id); if (el) el.classList.add("step-in"); }); } }
 function startNew(prefill) {
   S.q = newQuote(); if (prefill) Object.assign(S.q, prefill);
   S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = prefill ? 2 : 1; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Yeni proforma açıldı · numara oluşturulunca verilir");
