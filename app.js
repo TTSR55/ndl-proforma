@@ -45,10 +45,26 @@ const ICON = {
 };
 const kv = (k, v, cls = "") => `<div class="kv"><span>${esc(k)}</span><b class="${cls}">${v}</b></div>`;
 const noteLabel = v => (NOTES.find(n => n.v === v) || {l: v}).l;
-function toast(msg, undo) {
-  const t = $("toast"); t.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button data-act="undo">Geri al</button>` : ""}`;
-  t.hidden = false; S.undo = undo || null; clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.hidden = true; S.undo = null; }, undo ? 6000 : 3000);
+function toast(msg, undo, err) {
+  const t = $("toast"), keep = !!(undo || err);
+  t.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button data-act="undo">Geri al</button>` : ""}${keep ? `<button class="tx" data-act="toast-x" aria-label="Bildirimi kapat">${ICON.x}</button>` : ""}`;
+  t.classList.toggle("err", !!err); t.hidden = false; S.undo = undo || null; clearTimeout(toast._t);
+  announce(msg, err);
+  if (!keep) toast._t = setTimeout(() => { t.hidden = true; S.undo = null; }, 4000);   /* bilgi amaçlı olanlar kendiliğinden kapanır */
+}
+const toastErr = msg => toast(msg, null, true);
+/* ekran okuyucu duyurusu: sayfa açılışından beri boş duran bölgeye metin yazılır */
+function announce(msg, err) {
+  const r = $(err ? "srAlert" : "srStatus"); if (!r) return;
+  r.textContent = ""; clearTimeout(announce._t); announce._t = setTimeout(() => { r.textContent = msg; }, 50);
+}
+/* hatalı alanlar: kırmızı çerçevenin yanında aria-invalid ve (yapılandırıcıda) eksik listesine bağlantı */
+function syncInvalid(root) {
+  if (!root) return; const miss = $("cfgMiss");
+  root.querySelectorAll("input, select, textarea").forEach(el => {
+    if (el.classList.contains("need")) { el.setAttribute("aria-invalid", "true"); if (miss && el.closest("#formCard") && !el.hasAttribute("aria-describedby")) el.setAttribute("aria-describedby", "cfgMiss"); }
+    else { el.removeAttribute("aria-invalid"); if (el.getAttribute("aria-describedby") === "cfgMiss") el.removeAttribute("aria-describedby"); }
+  });
 }
 /* Şifre kuralları Supabase ayarıyla aynı: en az 10 karakter, küçük harf, büyük harf ve rakam. */
 const PW_RULES = [["len", "En az 10 karakter", p => p.length >= 10], ["lower", "Küçük harf (a-z)", p => /[a-z]/.test(p)], ["upper", "Büyük harf (A-Z)", p => /[A-Z]/.test(p)], ["digit", "Rakam (0-9)", p => /[0-9]/.test(p)]];
@@ -320,16 +336,36 @@ function renderSide() {
     + `<span class="grow"></span>${Store.mode === "demo" ? `<span class="mode">Demo</span>` : ""}`;
 }
 function updateCart() { const c = $("cartCount"), t = $("cartTotal"); if (c) c.textContent = S.q.items.length; if (t) t.textContent = money(qTotal(S.q), S.q.currency); }
+/* Odaklı öğeyi yeniden çizimden sonra bulmak için seçici: kimlik, yoksa data-act ve ilgili data-* değerleri */
+function focusKey(a) {
+  if (!a || a === document.body || !a.tagName) return null;
+  if (a.id) return "#" + CSS.escape(a.id);
+  const d = a.dataset || {}; if (!d.act && !d.stage) return null;
+  let k = a.tagName.toLowerCase();
+  ["act", "id", "k", "v", "i", "n", "stage", "src"].forEach(x => { if (d[x] != null) k += `[data-${x}="${CSS.escape(d[x])}"]`; });
+  return k;
+}
+const visibleOf = key => { const all = [...document.querySelectorAll(key)]; return all.find(n => n.offsetParent !== null) || all[0] || null; };
+/* Yeniden çizim odağı kaybettirmez: klavye kullanıcısı işlem yaptığı denetimde kalır */
 function keepFocus(el, fn) {
-  const a = document.activeElement, id = a && el.contains(a) ? a.id : null; let s0 = null, s1 = null;
+  const a = document.activeElement, key = a && el.contains(a) ? focusKey(a) : null; let s0 = null, s1 = null;
   try { s0 = a.selectionStart; s1 = a.selectionEnd; } catch (e) {}
   const top = el.scrollTop; fn(); el.scrollTop = top;
-  if (id) { const n = $(id); if (n) { n.focus({preventScroll: true}); try { if (s0 != null) n.setSelectionRange(s0, s1); } catch (e) {} } }
+  if (key) { const n = visibleOf(key); if (n) { n.focus({preventScroll: true}); try { if (s0 != null) n.setSelectionRange(s0, s1); } catch (e) {} } }
 }
+/* görünüm ya da adım değişince odak yeni bölümün başlığına gider */
+function focusHeading(sel) {
+  const h = document.querySelector(sel); if (!h) return;
+  if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
+  h.focus({preventScroll: true});
+}
+const viewTitle = () => { const n = NAV.find(x => x[0] === S.view); return (S.view === "yonetim" ? "Yönetim" : n ? n[1] : "") + (S.view === "proforma" && S.q ? ` · Adım ${S.step}/3` : ""); };
 function renderMain() {
   const m = $("main"); if (!m) return;
   keepFocus(m, () => { m.innerHTML = (S.view === "pano" ? pagePano() : S.view === "proformalar" ? pageQuotes() : S.view === "alicilar" ? pageCari() : S.view === "yonetim" ? pageAdmin() : S.view === "urunler" ? pageLib() : S.view === "firma" ? pageFirm() : pageProforma()).replace('<div class="page">', '<div class="page">' + annBar()); });
   paperRO.disconnect(); const p = $("paper"); if (p) paperRO.observe(p); fitPaper();
+  const vt = viewTitle(); document.title = (vt ? vt + " · " : "") + "NDL Proforma";
+  syncInvalid(m);
   if (S.flash != null) { const f = S.flash; setTimeout(() => { if (S.flash === f) S.flash = null; }, 1700); }
 }
 
@@ -430,7 +466,7 @@ function moneyIn(id, attr, val, need, ph = "0,00") { return `<div class="ico-in 
 function qtyHtml() { return `<div class="qty"><button data-act="qty" data-d="-1" aria-label="Azalt">−</button><input id="cqty" type="number" min="1" step="1" inputmode="numeric" data-c="qty" value="${esc(S.cfg.qty)}" aria-label="Adet"><button data-act="qty" data-d="1" aria-label="Artır">+</button></div>`; }
 function formProducts() {
   const c = S.cfg, ed = c.edit != null && S.q.items[c.edit];
-  return `<div class="tabs" role="tablist"><button role="tab" data-act="mode" data-v="lift" aria-selected="${c.mode === "lift"}">Lift</button><button role="tab" data-act="mode" data-v="spare" aria-selected="${c.mode === "spare"}">Yedek Parça</button></div>
+  return `<h2 class="sr-only">Ürün Ekle</h2><div class="tabs" role="tablist"><button role="tab" data-act="mode" data-v="lift" aria-selected="${c.mode === "lift"}">Lift</button><button role="tab" data-act="mode" data-v="spare" aria-selected="${c.mode === "spare"}">Yedek Parça</button></div>
     ${ed ? `<div class="edit-note"><span>${c.edit + 1}. kalemi düzenliyorsunuz · ${esc(itemInfo(ed).code)}</span><button class="link" data-act="cfg-cancel">Vazgeç</button></div>` : ""}
     ${c.mode === "lift" ? cfgLift() : cfgSpare()}
     <div class="card-f" id="cfgFoot">${cfgFootHtml()}</div>`;
@@ -480,7 +516,7 @@ function cfgFootHtml() {
     <div class="btns">${S.q.items.length ? `<button class="btn" data-act="step" data-n="3">${ICON.eye} Önizle ve Oluştur</button>` : ""}</div>`;
   const miss = cfgMissing(c), unit = cfgUnit(c), qty = Math.max(0, Number(c.qty) || 0), ot = c.mode === "lift" ? c.opts.reduce((a, o) => a + num(o.price), 0) : 0;
   const calc = c.mode === "lift" && c.opts.length ? `${money(num(c.price), cur)} + ${c.opts.length} opsiyon ${money(ot, cur)} = ${money(unit, cur)} × ${qty}` : `${money(unit, cur)} × ${qty}`;
-  return `<div class="grow sum"><span class="calc">${calc}</span><span class="big">${money(unit * qty, cur)}</span>${miss.length ? `<span class="${S.cfgTried ? "miss" : ""}">Eksik: ${miss.join(", ")}</span>` : `<span class="ok">Eklemeye hazır</span>`}</div>
+  return `<div class="grow sum"><span class="calc">${calc}</span><span class="big">${money(unit * qty, cur)}</span>${miss.length ? `<span id="cfgMiss" class="${S.cfgTried ? "miss" : ""}">Eksik: ${miss.join(", ")}</span>` : `<span class="ok">Eklemeye hazır</span>`}</div>
     <div class="btns">${c.edit != null ? `<button class="btn ghost" data-act="cfg-cancel">Vazgeç</button>` : `<button class="btn ghost" data-act="cfg-reset">Temizle</button>`}
     <button class="btn blue" data-act="cfg-add">${c.edit != null ? ICON.check + " Kalemi Güncelle" : ICON.plus + " Proformaya Ekle"}</button></div>`;
 }
@@ -520,7 +556,7 @@ function itemsCard() {
       it.volt && `<span class="tag amber">${esc(voltLabel(it.volt))}</span>`, it.opts.length && `<span class="tag green">+${it.opts.length} opsiyon</span>`, it.note && `<span class="tag solid-amber">${esc(noteLabel(it.note))}</span>`].filter(Boolean).join("");
     return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="thumb sm">${itemPhotos(it).main ? `<img src="${esc(itemPhotos(it).main)}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
       <td class="r">${esc(it.qty)}</td><td class="r">${missingPrice(it) ? `<span class="tag red">Fiyat eksik</span>` : money(unitPrice(it), c)}</td><td class="r strong">${money(lineTotal(it), c)}</td>
-      <td><div class="acts"><button class="btn green sm" data-act="row-open" data-i="${i}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
+      <td><div class="acts"><button class="btn sm" data-act="row-open" data-i="${i}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
         <button class="ibtn" data-act="li-edit" data-i="${i}" title="Düzenle" aria-label="${i + 1}. kalemi düzenle">${ICON.edit}</button>
         <button class="ibtn" data-act="li-up" data-i="${i}" title="Yukarı" aria-label="Yukarı taşı"${i === 0 ? " disabled" : ""}>${ICON.up}</button>
         <button class="ibtn" data-act="li-down" data-i="${i}" title="Aşağı" aria-label="Aşağı taşı"${i === q.items.length - 1 ? " disabled" : ""}>${ICON.down}</button>
@@ -547,7 +583,7 @@ function formReview() {
     <div class="fld"><label for="r_cur">Para birimi</label><select id="r_cur" data-q="currency">${Object.keys(CUR).map(k => opt(k, q.currency, k + " (" + CUR[k] + ")")).join("")}</select></div>
     <div class="fld s2"><label for="r_pay">Ödeme şekli</label><input id="r_pay" data-q="payment" list="dlPay" value="${esc(q.payment)}"></div>
     <div class="fld"><label for="r_del">Teslim şekli</label><input id="r_del" data-q="delivery" list="dlDel" value="${esc(q.delivery)}"></div>
-    <div class="fld"><label for="r_val">Opsiyon süresi</label><input id="r_val" data-q="validity" list="dlVal" value="${esc(q.validity)}"></div>
+    <div class="fld"><label for="r_val">Geçerlilik süresi</label><input id="r_val" data-q="validity" list="dlVal" value="${esc(q.validity)}"></div>
     <div class="fld s2"><label for="r_dt">Teslim süresi</label><input id="r_dt" data-q="dtime" list="dlDt" value="${esc(q.dtime)}"></div>
     <div class="fld s2"><span class="lbl">&nbsp;</span><span class="hint" style="align-self:center">Şartları listeden seçebilir ya da serbestçe yazabilirsiniz.</span></div>
     ${hsField(q)}
@@ -567,23 +603,30 @@ function hsSuggest(q) {
   S.quotes.forEach(x => hsList(x).forEach(h => { const k = hsKey(h); if (!have.has(k)) (cnt[k] = cnt[k] || {h, n: 0}).n++; }));
   return Object.values(cnt).sort((a, b) => b.n - a.n).slice(0, 6).map(c => c.h);
 }
+function hsHint(q) {
+  if (S.hsErr) return esc(S.hsErr);
+  const sug = hsSuggest(q);
+  return sug.length && hsList(q).length < HS_MAX ? `Son kullanılanlar: ${sug.map(c => `<button class="chip xs" data-act="hs-sug" data-v="${esc(c)}">${ICON.plus}${esc(c)}</button>`).join("")}` : "Enter ya da virgülle ekleyin. Rakam ve nokta kullanılabilir (4–14 rakam).";
+}
 function hsField(q) {
-  const codes = hsList(q), sug = hsSuggest(q), full = codes.length >= HS_MAX;
+  const codes = hsList(q), full = codes.length >= HS_MAX;
   return `<div class="fld s4"><span class="lbl" id="hsLbl">HS kodları (GTİP) <em>birden çok kod girilebilir · proformada virgülle ayrılarak basılır</em></span>
     <div class="hs-box">${codes.map((c, i) => `<span class="hs-chip"><b class="num">${esc(c)}</b><button data-act="hs-del" data-i="${i}" title="Kaldır" aria-label="${esc(c)} kodunu kaldır">${ICON.x}</button></span>`).join("")}
-      ${full ? `<span class="hint">En fazla ${HS_MAX} kod</span>` : `<input id="r_hs" class="hs-in" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="${codes.length ? "Başka kod ekle" : "Örn. 8428.90"}" aria-labelledby="hsLbl" aria-describedby="hsHint">
+      ${full ? `<span class="hint">En fazla ${HS_MAX} kod</span>` : `<input id="r_hs" class="hs-in${S.hsErr ? " need" : ""}"${S.hsErr ? ' aria-invalid="true"' : ""} inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="${codes.length ? "Başka kod ekle" : "Örn. 8428.90"}" aria-labelledby="hsLbl" aria-describedby="hsHint">
       <button class="btn sm" data-act="hs-add">${ICON.plus} Ekle</button>`}</div>
-    <span class="hint" id="hsHint">${sug.length && !full ? `Son kullanılanlar: ${sug.map(c => `<button class="chip xs" data-act="hs-sug" data-v="${esc(c)}">${ICON.plus}${esc(c)}</button>`).join("")}` : "Enter ya da virgülle ekleyin. Rakam ve nokta kullanılabilir (4–14 rakam)."}</span></div>`;
+    <span class="hint${S.hsErr ? " err" : ""}" id="hsHint">${hsHint(q)}</span></div>`;
 }
 function addHs(raw) {
   const q = S.q, parts = String(raw || "").split(/[,;\n]+/).map(x => x.trim()).filter(Boolean);
   if (!parts.length) return true;
   const bad = parts.filter(x => !normHs(x)), list = hsList(q).slice(); let dup = 0, over = 0, added = 0;
   parts.map(normHs).filter(Boolean).forEach(h => { if (list.some(x => hsKey(x) === hsKey(h))) dup++; else if (list.length >= HS_MAX) over++; else { list.push(h); added++; } });
-  if (added) { q.hsCodes = list; touch(); renderMain(); }
-  const inp = $("r_hs");   /* geçerli kodlar eklenir; hatalı kısım düzeltilmek üzere kutuda kalır */
-  if (inp) { inp.value = bad.join(", "); inp.classList.toggle("need", bad.length > 0); inp.focus(); }
-  if (bad.length) toast(`“${bad[0]}” geçerli bir HS kodu değil · 4–14 rakam, nokta kullanılabilir (ör. 8428.90)`);
+  if (added) { q.hsCodes = list; touch(); }
+  /* geçerli kodlar eklenir; hatalı kısım düzeltilmek üzere kutuda kalır, hata alanın hemen altında yazar */
+  S.hsErr = bad.length ? `“${bad[0]}” geçerli bir HS kodu değil. 4–14 rakam girin; nokta kullanılabilir (ör. 8428.90).` : "";
+  renderMain();
+  const inp = $("r_hs"); if (inp) { inp.value = bad.join(", "); inp.focus(); }
+  if (bad.length) announce(S.hsErr, true);
   else if (over) toast("En fazla " + HS_MAX + " HS kodu girilebilir");
   else if (dup) toast(dup === parts.length ? "Bu kod zaten ekli" : "Tekrarlanan kodlar atlandı");
   return !bad.length;
@@ -608,8 +651,8 @@ const stageTag = q => { const s = STAGE_BY[stageOf(q)]; return `<span class="tag
 const isExpired = x => { const e = expiry(x); return !!e && e.days < 0; };
 function expiryTag(x) {
   const e = expiry(x); if (!e || e.days > 3) return "";
-  return e.days < 0 ? `<span class="tag red" title="Opsiyon süresi ${fmtDate(e.until)} tarihinde doldu">${ICON.clock}Süresi doldu</span>`
-    : `<span class="tag amber" title="Opsiyon süresi ${fmtDate(e.until)} tarihinde doluyor">${ICON.clock}${e.days === 0 ? "Bugün doluyor" : e.days + " gün kaldı"}</span>`;
+  return e.days < 0 ? `<span class="tag red" title="Geçerlilik süresi ${fmtDate(e.until)} tarihinde doldu">${ICON.clock}Süresi doldu</span>`
+    : `<span class="tag amber" title="Geçerlilik süresi ${fmtDate(e.until)} tarihinde doluyor">${ICON.clock}${e.days === 0 ? "Bugün doluyor" : e.days + " gün kaldı"}</span>`;
 }
 function ago(ts) { if (!ts) return ""; const d = Math.floor((new Date(today() + "T23:59:59") - ts) / 864e5); return d <= 0 ? "bugün" : d === 1 ? "dün" : d + " gün önce"; }
 function stagePick(x) {
@@ -626,7 +669,7 @@ async function putQuoteRow(x) {
     const stored = await Store.put("quote", x.id, d);
     if (stored) { const y = Object.assign({id: x.id}, stored); upsertLocal(S.quotes, y); syncOpenQuote(y); }
     return true;
-  } catch (e) { if (prev) { upsertLocal(S.quotes, prev); syncOpenQuote(prev); } renderMain(); toast("Aşama kaydedilemedi: " + authError(e)); return false; }
+  } catch (e) { if (prev) { upsertLocal(S.quotes, prev); syncOpenQuote(prev); } renderMain(); toastErr("Aşama kaydedilemedi: " + authError(e)); return false; }
 }
 function syncOpenQuote(x) {
   if (!S.q || S.q.id !== x.id || !S.q.saved) return;
@@ -635,9 +678,13 @@ function syncOpenQuote(x) {
 }
 async function setStage(id, k) {
   const x = S.quotes.find(z => z.id === id); if (!x || !STAGE_BY[k] || stageOf(x) === k) return;
-  const before = JSON.parse(JSON.stringify(x)), at = Date.now();
+  const prev = {stage: x.stage, stageAt: x.stageAt, stageLog: x.stageLog}, at = Date.now();
   const ok = await putQuoteRow(Object.assign(JSON.parse(JSON.stringify(x)), {stage: k, stageAt: at, stageLog: [...stageLogOf(x), {k, at}].slice(-30)}));
-  if (ok) toast(`${x.no || "Proforma"} · ${STAGE_BY[k].l}`, () => putQuoteRow(before));
+  if (ok) toast(`${x.no || "Proforma"} · ${STAGE_BY[k].l}`, () => {
+    const cur = S.quotes.find(z => z.id === id); if (!cur) return;
+    const y = JSON.parse(JSON.stringify(cur)); ["stage", "stageAt", "stageLog"].forEach(f => { if (prev[f] === undefined) delete y[f]; else y[f] = JSON.parse(JSON.stringify(prev[f])); });
+    putQuoteRow(y);
+  });
 }
 
 /* ---------- KAYITLAR sayfası ---------- */
@@ -656,31 +703,31 @@ function stageStrip(base) {
   const G = [["open", "Süreçte"], ["won", "Olumlu sonuçlanan"], ["lost", "Olumsuz kapanan"]];
   const exp = base.filter(isExpired);
   return `<section class="card pipe"><div class="card-h"><h2 class="ttl">Teklif Süreci</h2><span class="muted small">Bir aşamaya tıklayarak listeyi süzün</span>
-      ${exp.length ? `<div class="acts"><button class="btn sm ${S.qStage === "expired" ? "amber" : "ghost"}" data-act="q-stage" data-k="expired" aria-pressed="${S.qStage === "expired"}">${ICON.clock} Opsiyon süresi dolan: <b>${exp.length}</b></button></div>` : ""}</div>
+      ${exp.length ? `<div class="acts"><button class="btn sm ${S.qStage === "expired" ? "amber" : "ghost"}" data-act="q-stage" data-k="expired" aria-pressed="${S.qStage === "expired"}">${ICON.clock} Geçerlilik süresi dolan: <b>${exp.length}</b></button></div>` : ""}</div>
     <div class="pipe-row">${tile("", "Tümü", base, "")}
       ${G.map(([g, gl]) => `<div class="pipe-g g-${g}"><span class="pipe-gl">${gl}</span><div class="pipe-tiles">${STAGES.filter(s => s.grp === g).map(s => tile(s.k, s.l, base.filter(x => stageOf(x) === s.k), s.d)).join("")}</div></div>`).join("")}</div></section>`;
 }
 function quoteRow(x) {
   const open = S.openQ.has(x.id), items = x.items || [], cari = x.customerId && cariById(x.customerId), vu = validUntil(x);
   const log = stageLogOf(x).filter(e => e.at).map(e => `${esc(STAGE_BY[e.k].l)} <span class="muted">${fmtTs(e.at)}</span>`).join(" → ");
-  return `<tr class="row"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")}<span class="m-only"> · ${fmtDate(x.date)}</span></span></td>
+  return `<tr class="row"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")}<span class="m-only"> · ${fmtDate(x.date)}</span></span><span class="m-amt">${money(x.total, x.currency)}</span></td>
       <td><b>${esc(x.buyer || "—")}</b><span class="sub">${cari ? esc(cari.code) + " · " : ""}${esc([x.city, x.country].filter(Boolean).join(", ") || x.address || "")}</span><div class="stg-m">${stagePick(x)}${expiryTag(x)}</div></td>
       <td class="stg-cell">${stagePick(x)}<span class="sub">${x.stageAt ? `${esc(ago(x.stageAt))} güncellendi` : ""}${expiryTag(x)}</span></td>
-      <td class="c"><span class="tag blue">${items.length} kalem</span></td><td class="r strong">${money(x.total, x.currency)}</td>
-      <td><div class="acts"><button class="btn green sm" data-act="q-open" data-id="${x.id}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
-        <button class="btn blue sm" data-act="dup" data-id="${x.id}" title="Yeni numarayla kopyasını aç">${ICON.copy} Tekrarla</button>
+      <td class="c k-col"><span class="tag blue">${items.length} kalem</span></td><td class="r strong k-col">${money(x.total, x.currency)}</td>
+      <td><div class="acts"><button class="btn sm" data-act="q-open" data-id="${x.id}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
+        <button class="btn sm" data-act="dup" data-id="${x.id}" title="Yeni numarayla kopyasını aç">${ICON.copy} Tekrarla</button>
         <button class="btn sm" data-act="q-edit" data-id="${x.id}">${ICON.edit} Düzenle</button>
         <button class="ibtn" data-act="out" data-k="pdf" data-src="${x.id}" title="PDF indir" aria-label="PDF indir">${ICON.file}</button>
         <button class="ibtn" data-act="out" data-k="xlsx" data-src="${x.id}" title="Excel indir" aria-label="Excel indir">${ICON.grid}</button>
         <button class="ibtn danger" data-act="q-del" data-id="${x.id}" title="Sil" aria-label="Proformayı sil">${ICON.trash}</button></div></td></tr>
     ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it).code + " · " + itemInfo(it).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}
-      ${kv("Opsiyon süresi", esc(x.validity || "—") + (vu ? ` <span class="muted">· ${fmtDate(vu)} tarihine kadar</span>` : ""))}${kv("HS kodları", esc(hsText(x) || "—"))}
+      ${kv("Geçerlilik süresi", esc(x.validity || "—") + (vu ? ` <span class="muted">· ${fmtDate(vu)} tarihine kadar</span>` : ""))}${kv("HS kodları", esc(hsText(x) || "—"))}
       ${log ? `<div class="kv wide"><span>Aşama geçmişi</span><b>${log}</b></div>` : ""}</div></td></tr>` : ""}`;
 }
 function pageQuotes() {
   const base = filteredQuotes(true), list = filteredQuotes().sort(byDateDesc), by = {};
   list.forEach(x => { by[x.currency] = (by[x.currency] || 0) + (x.total || 0); });
-  const grouped = S.qView !== "list", fl = S.qStage === "expired" ? "Opsiyon süresi dolan" : S.qStage ? STAGE_BY[S.qStage].l : "";
+  const grouped = S.qView !== "list", fl = S.qStage === "expired" ? "Geçerlilik süresi dolan" : S.qStage ? STAGE_BY[S.qStage].l : "";
   let body;
   if (grouped) body = STAGES.map(st => {
     const l = list.filter(x => stageOf(x) === st.k); if (!l.length) return "";
@@ -701,7 +748,7 @@ function pageQuotes() {
     <section class="card"><dl class="sumbox"><div><dt>Proforma</dt><dd>${list.length}</dd></div>${Object.keys(CUR).map(k => `<div><dt>Toplam ${k}</dt><dd class="${k === "USD" ? "blue" : k === "EUR" ? "green" : ""}">${money(by[k] || 0, k)}</dd></div>`).join("")}</dl></section></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Proforma Listesi</h2><span class="muted small">${list.length} / ${S.quotes.length}</span>${fl ? `<button class="tag blue fchip" data-act="q-stage" data-k="" title="Aşama filtresini kaldır">${esc(fl)} ${ICON.x}</button>` : ""}
       <div class="acts"><div class="seg sm" role="group" aria-label="Liste görünümü"><button data-act="q-view" data-v="group" aria-pressed="${grouped}">${ICON.stack} Aşamaya göre</button><button data-act="q-view" data-v="list" aria-pressed="${!grouped}">${ICON.list} Tarihe göre</button></div></div></div>
-    ${list.length ? `<div class="tbl-wrap"><table class="tbl qtbl"><thead><tr><th class="d-col">Tarih</th><th>No</th><th>Alıcı</th><th class="stg-th">Aşama</th><th class="c">Kalem</th><th class="r">Tutar</th><th></th></tr></thead>${body}</table></div>`
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl qtbl"><thead><tr><th class="d-col">Tarih</th><th>No</th><th>Alıcı</th><th class="stg-th">Aşama</th><th class="c k-col">Kalem</th><th class="r k-col">Tutar</th><th></th></tr></thead>${body}</table></div>`
       : `<div class="empty">${S.quotes.length ? (fl ? `“${esc(fl)}” aşamasında filtreyle eşleşen proforma yok.` : "Filtreyle eşleşen proforma yok.") : `Henüz kayıtlı proforma yok.<br>Proforma sayfasında <b>Proformayı Oluştur</b> dediğinizde burada listelenir.`}${S.quotes.length ? "" : `<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn blue" data-act="go" data-v="proforma">${ICON.plus} Proforma oluştur</button><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>`}</div>`}</section></div>`;
 }
 
@@ -817,7 +864,7 @@ const USER_STATUS = {pending: ["amber", "Onay bekliyor"], active: ["green", "Akt
 async function loadUsers(quiet) {
   if (S.role !== "admin" || S.admin.loading) return; S.admin.loading = true;
   try { S.admin.users = (await Store.rpc("admin_list_users")) || []; S.pendingCount = S.admin.users.filter(u => u.status === "pending").length; }
-  catch (e) { if (!quiet) toast("Kullanıcılar alınamadı: " + authError(e)); S.admin.users = S.admin.users || []; }
+  catch (e) { if (!quiet) toastErr("Kullanıcılar alınamadı: " + authError(e)); S.admin.users = S.admin.users || []; }
   finally { S.admin.loading = false; renderSide(); renderTop(); if (S.view === "yonetim") renderMain(); }
 }
 function pageAdmin() {
@@ -960,11 +1007,18 @@ function coEditor(e) {
 }
 
 /* ---------- onay penceresi ---------- */
-function ask(o) { S.confirm = o; renderConfirm(); }
-function renderConfirm() {
-  const c = $("confirm"), x = S.confirm; if (!x) { c.hidden = true; c.innerHTML = ""; return; }
-  c.innerHTML = `<div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cfT"><h3 id="cfT">${esc(x.title)}</h3><p>${x.msg}</p><div class="row"><button class="btn" data-act="cf-no">Vazgeç</button><button class="btn ${x.danger ? "red" : "blue"}" data-act="cf-yes">${esc(x.yes)}</button></div></div>`;
-  c.hidden = false; c.querySelector('[data-act="cf-yes"]').focus();
+function ask(o) { const a = document.activeElement; S.cfFrom = {el: a, key: focusKey(a)}; S.confirm = o; renderConfirm(); }
+function renderConfirm(keepClosedFocus) {
+  const c = $("confirm"), x = S.confirm, app = document.querySelector(".app");
+  if (!x) { const was = !c.hidden; c.hidden = true; c.innerHTML = ""; if (app) app.inert = false; if (was && !keepClosedFocus) restoreConfirmFocus(); return; }
+  c.innerHTML = `<div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cfT" aria-describedby="cfM"><h3 id="cfT">${esc(x.title)}</h3><p id="cfM">${x.msg}</p><div class="row"><button class="btn" data-act="cf-no">Vazgeç</button><button class="btn ${x.danger ? "red" : "blue"}" data-act="cf-yes">${esc(x.yes)}</button></div></div>`;
+  c.hidden = false; if (app) app.inert = true;
+  c.querySelector(x.danger ? '[data-act="cf-no"]' : '[data-act="cf-yes"]').focus();
+}
+function restoreConfirmFocus() {
+  const el = S.cfFrom && S.cfFrom.el, key = S.cfFrom && S.cfFrom.key; S.cfFrom = null;
+  const n = el && el.isConnected && el.offsetParent !== null ? el : key ? visibleOf(key) : null;
+  if (n && n.offsetParent !== null) n.focus({preventScroll: true}); else focusHeading("#main h1");
 }
 function needsGuard() { const q = S.q; if (!q) return false; return !q.sample && q.items.length > 0 && (!q.saved || q.dirty); }
 function guard(what, fn) { if (!needsGuard()) { fn(); return; } ask({title: "Kaydedilmemiş taslak", msg: `Açık proforma (<b>${esc(S.q.no || "taslak")}</b>) kaydedilmedi. ${what} bu taslak silinir.`, yes: "Devam et", fn}); }
@@ -975,7 +1029,8 @@ const cariChosen = q => !!q.customerId || (q.saved && !!String(q.buyer).trim());
 function go(v) { S.keepQ = true; if (location.hash !== "#" + v) location.hash = v; else { S.keepQ = false; S.view = v; renderSide(); renderMain(); } }
 function setStep(n) {
   if (n > 1 && S.q && step1Missing(S.q).length && !S.q.sample) { if (S.step !== 1 || S.view !== "proforma") { S.step = 1; if (S.view !== "proforma") go("proforma"); else renderMain(); } toast(step1Msg(S.q)); return; }
-  S.step = n; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0); }
+  const moved = S.step !== n; S.step = n; S.hsErr = ""; saveDraft(); if (S.view !== "proforma") go("proforma"); else renderMain(); const m = $("main"); if (m) m.scrollTop = 0; window.scrollTo(0, 0);
+  if (moved) focusHeading("#formCard h2"); }
 function startNew(prefill) {
   S.q = newQuote(); if (prefill) Object.assign(S.q, prefill);
   S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = prefill ? 2 : 1; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Yeni proforma açıldı · numara oluşturulunca verilir");
@@ -1012,7 +1067,7 @@ async function createProforma(btn) {
     Object.assign(q, {no: stored.no, sysNo: stored.sysNo || "", createdAt: stored.createdAt, saved: true, dirty: false, status: "created", sample: false,
       stage: stored.stage, stageAt: stored.stageAt, stageLog: stored.stageLog});
     saveDraft(); toast(isNew ? `${q.no} oluşturuldu · ${q.buyer} kayıtlarına eklendi` : `${q.no} güncellendi`); renderMain(); updateCart();
-  } catch (e) { toast("Kaydedilemedi: " + authError(e)); busy(btn, false); }
+  } catch (e) { toastErr("Kaydedilemedi: " + authError(e)); busy(btn, false); }
 }
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.integrity = XLSX_SRI; s.crossOrigin = "anonymous"; s.referrerPolicy = "no-referrer"; s.onload = res; s.onerror = () => rej(new Error("Excel modülü yüklenemedi")); document.head.appendChild(s); }); }
 function safeName(s) { return String(s || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().replace(/[.\s]+$/, ""); }
@@ -1039,13 +1094,13 @@ async function makeFile(kind, src, btn) {
     }
     saveBlob(blob, safeName([q.no, q.buyer].filter(Boolean).join(" ") || "proforma") + (kind === "pdf" ? ".pdf" : ".xlsx"));
     toast((kind === "pdf" ? "PDF" : "Excel") + " indirildi");
-  } catch (e) { toast((kind === "pdf" ? "PDF" : "Excel") + " oluşturulamadı: " + ((e && e.message) || e)); }
+  } catch (e) { toastErr((kind === "pdf" ? "PDF" : "Excel") + " oluşturulamadı: " + ((e && e.message) || e)); }
   finally { S.busy = false; busy(btn, false); }
 }
 async function saveProduct(btn) {
   const e = S.lib.edit; if (!e) return;
-  if (!isAdmin()) { toast("Ürün kütüphanesini yalnızca yönetici değiştirebilir"); return; }
-  if (!String(e.code).trim() || !String(e.name).trim()) { toast("Kod ve ürün adı boş olamaz"); return; }
+  if (!isAdmin()) { toastErr("Ürün kütüphanesini yalnızca yönetici değiştirebilir"); return; }
+  if (!String(e.code).trim() || !String(e.name).trim()) { toastErr("Kod ve ürün adı boş olamaz"); return; }
   const id = e.id || ("p-" + rid()), order = e.order || Math.max(0, ...products().map(p => p.order || 0)) + 1;
   const d = {code: String(e.code).trim(), name: String(e.name).trim(), type: e.type, order,
     caps: String(e.caps || "").split(/[,;\s]+/).map(Number).filter(n => n > 0)};
@@ -1057,35 +1112,35 @@ async function saveProduct(btn) {
     if (!S.products.length) S.products = CATALOG.map(p => ({...p}));
     upsertLocal(S.products, Object.assign({id}, d)); S.products.sort((a, b) => (a.order || 0) - (b.order || 0));
     S.lib.sel = id; S.lib.type = d.type; S.lib.edit = null; toast("Ürün kaydedildi"); renderMain();
-  } catch (err) { toast("Kaydedilemedi: " + authError(err)); busy(btn, false); }
+  } catch (err) { toastErr("Kaydedilemedi: " + authError(err)); busy(btn, false); }
 }
 async function saveCari(btn) {
   const e = S.cariEdit; if (!e) return null;
-  if (!String(e.name).trim()) { S.cariTried = true; renderMain(); toast("Firma unvanı boş olamaz"); return null; }
+  if (!String(e.name).trim()) { S.cariTried = true; renderMain(); toastErr("Firma unvanı boş olamaz"); return null; }
   const c = normCari(Object.assign({}, e, {id: e.id || ("c-" + rid())}));
   c.name = c.name.trim(); c.code = (c.code || "").trim() || nextCariCode();
-  if (S.customers.some(x => x.id !== c.id && x.code && x.code === c.code)) { toast("Bu cari kodu başka bir kartta kullanılıyor"); return null; }
+  if (S.customers.some(x => x.id !== c.id && x.code && x.code === c.code)) { toastErr("Bu cari kodu başka bir kartta kullanılıyor"); return null; }
   c.createdAt = c.createdAt || Date.now(); c.updatedAt = Date.now();
   busy(btn, true);
   try { const {id, ...data} = c; await Store.put("customer", id, data); upsertLocal(S.customers, c); S.cariTried = false; toast(c.code + " · " + c.name + " kaydedildi"); return c; }
-  catch (err) { toast("Kaydedilemedi: " + authError(err)); return null; }
+  catch (err) { toastErr("Kaydedilemedi: " + authError(err)); return null; }
   finally { busy(btn, false); }
 }
 async function adminAction(fn, args, okMsg) {
-  try { await Store.rpc(fn, args); toast(okMsg); } catch (e) { toast(authError(e)); }
+  try { await Store.rpc(fn, args); toast(okMsg); } catch (e) { toastErr(authError(e)); }
   await loadUsers();
 }
 async function saveCompany(btn) {
   const e = S.co.edit; if (!e) return;
-  if (!isAdmin()) { toast("Firmaları yalnızca yönetici değiştirebilir"); return; }
-  if (!String(e.company || "").trim()) { toast("Firma unvanı boş olamaz"); const n = $("co_company"); if (n) n.focus(); return; }
+  if (!isAdmin()) { toastErr("Firmaları yalnızca yönetici değiştirebilir"); return; }
+  if (!String(e.company || "").trim()) { toastErr("Firma unvanı boş olamaz"); const n = $("co_company"); if (n) n.focus(); return; }
   const id = e.id || ("firma-" + rid()), d = {};
   ["name", "logo", ...COMPANY_FIELDS].forEach(k => { const v = typeof e[k] === "string" ? e[k].trim() : e[k]; if (v) d[k] = v; });
   d.prefix = String(d.prefix || "PI").replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 8) || "PI";
   d.name = d.name || d.company; d.order = e.order || Math.max(0, ...S.companies.map(c => c.order || 0)) + 1;
   busy(btn, true);
   try { await Store.putShared("company", id, d); upsertLocal(S.companies, Object.assign({id}, d)); S.companies.sort(coSort); S.co.sel = id; S.co.edit = null; toast(d.name + " kaydedildi"); renderMain(); }
-  catch (err) { toast("Kaydedilemedi: " + authError(err)); busy(btn, false); }
+  catch (err) { toastErr("Kaydedilemedi: " + authError(err)); busy(btn, false); }
 }
 
 /* ---------- olaylar ---------- */
@@ -1096,7 +1151,7 @@ document.addEventListener("input", e => {
     if (ul) { PW_RULES.forEach(r => { const li = ul.querySelector(`[data-r="${r[0]}"]`); if (li) li.classList.toggle("ok", r[2](t.value)); }); const lk = ul.querySelector(".leak"); if (lk) lk.classList.remove("bad"); }
   }
   if (t.id === "r_hs") {   /* virgül ya da noktalı virgül yazılınca (telefon klavyeleri dahil) önceki kısım eklenir */
-    t.classList.remove("need");
+    if (S.hsErr) { S.hsErr = ""; t.classList.remove("need"); t.removeAttribute("aria-invalid"); const h = $("hsHint"); if (h) { h.classList.remove("err"); h.innerHTML = hsHint(S.q); } }
     if (/[,;]/.test(t.value)) { const parts = t.value.split(/[,;]/), rest = parts.pop(); if (parts.join("").trim() && addHs(parts.join(","))) { const i = $("r_hs"); if (i) i.value = rest.trimStart(); } }
     return;
   }
@@ -1119,6 +1174,8 @@ document.addEventListener("input", e => {
   if (d.coe) { if (S.co.edit) S.co.edit[d.coe] = t.value; return; }
   if (d.an) { S.annEdit[d.an] = t.value; return; }
 });
+/* alan düzeltildikçe aria-invalid güncellenir */
+document.addEventListener("input", e => { const t = e.target; if (t.matches && t.matches("input, select, textarea")) queueMicrotask(() => syncInvalid($("main"))); });
 document.addEventListener("change", e => {
   const t = e.target, d = t.dataset, c = S.cfg;
   if (d.up) {
@@ -1126,7 +1183,7 @@ document.addEventListener("change", e => {
     const lib = d.up === "lib";
     shrinkImage(file, lib ? 640 : 480, lib ? "image/jpeg" : "image/png", 0.82)
       .then(u => { if (lib && S.lib.edit) S.lib.edit.img = u; else if (!lib && S.co.edit) S.co.edit.logo = u; renderMain(); toast((lib ? "Fotoğraf" : "Logo") + " eklendi · kaydetmeyi unutmayın"); })
-      .catch(err => toast((err && err.message) || "Görsel eklenemedi"));
+      .catch(err => toastErr((err && err.message) || "Görsel eklenemedi"));
     return;
   }
   if (d.stage) { setStage(d.stage, t.value); return; }
@@ -1192,7 +1249,8 @@ document.addEventListener("click", async e => {
     case "reload": location.reload(); break;
     case "copy-sql": { const t = ($("sqlBox") || {}).textContent || ""; try { await navigator.clipboard.writeText(t); toast("SQL kopyalandı"); } catch (x) { const r = document.createRange(); r.selectNodeContents($("sqlBox")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Metin seçildi; kopyalayın"); } break; }
     /* çerçeve */
-    case "theme": lsSet("ndl-theme", isDark() ? "light" : "dark"); applyTheme(); renderTop(); break;
+    case "theme": { const r = document.documentElement; r.classList.add("notr"); lsSet("ndl-theme", isDark() ? "light" : "dark"); applyTheme(); renderTop();
+      void getComputedStyle(r).color; const off = () => r.classList.remove("notr"); requestAnimationFrame(() => requestAnimationFrame(off)); setTimeout(off, 200); break; }
     case "umenu": S.menu = S.menu === "user" ? null : "user"; renderTop(); break;
     case "go": go(b.dataset.v); break;
     case "step": setStep(+b.dataset.n); break;
@@ -1201,8 +1259,9 @@ document.addEventListener("click", async e => {
     case "tpl-open": guard("Örnek şablon açılırsa", () => { S.q = templateQuote(); S.cfg = newCfg(); S.cfgTried = false; S.openRows.clear(); S.step = 3; saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Örnek şablon açıldı · bilgiler hayalidir"); }); break;
     case "tpl-clear": startNew(); break;
     case "undo": if (S.undo) { S.undo(); S.undo = null; $("toast").hidden = true; } break;
+    case "toast-x": clearTimeout(toast._t); S.undo = null; $("toast").hidden = true; break;
     case "cf-no": S.confirm = null; renderConfirm(); $("confirm").hidden = true; break;
-    case "cf-yes": { const fn = S.confirm && S.confirm.fn; S.confirm = null; renderConfirm(); if (fn) await fn(); break; }
+    case "cf-yes": { const fn = S.confirm && S.confirm.fn; S.confirm = null; renderConfirm(true); if (fn) await fn(); restoreConfirmFocus(); break; }
     /* yapılandırıcı */
     case "mode": if (c.mode !== b.dataset.v) { S.cfg = newCfg(b.dataset.v); S.cfgTried = false; saveDraft(); renderMain(); } break;
     case "mat": c.mat = b.dataset.v; saveDraft(); renderMain(); break;
@@ -1213,7 +1272,7 @@ document.addEventListener("click", async e => {
     case "cfg-cancel": S.cfg = newCfg(c.mode); S.cfgTried = false; saveDraft(); renderMain(); break;
     case "cfg-add": {
       const miss = cfgMissing(c);
-      if (miss.length) { S.cfgTried = true; renderMain(); const n = document.querySelector("#formCard .need"); if (n) n.scrollIntoView({block: "center", behavior: "smooth"}); toast("Eksik: " + miss.join(", ")); break; }
+      if (miss.length) { S.cfgTried = true; renderMain(); const n = document.querySelector("#formCard .need"); if (n) n.scrollIntoView({block: "center", behavior: "smooth"}); toastErr("Eksik: " + miss.join(", ")); break; }
       const it = cfgItem(c), code = itemInfo(it).code; let idx;
       if (c.edit != null && q.items[c.edit]) { idx = c.edit; q.items[idx] = it; toast(`${idx + 1}. kalem güncellendi`); }
       else { q.items.push(it); idx = q.items.length - 1; toast(`${code} proformaya eklendi · ${idx + 1}. kalem`); }
@@ -1245,8 +1304,8 @@ document.addEventListener("click", async e => {
       if (S.q && S.q.id === src.id && S.q.saved) { go("proforma"); setStep(2); break; }
       guard("Kayıt açılırsa", () => { S.q = Object.assign(normQuote(JSON.parse(JSON.stringify(src))), {id: src.id, saved: true, dirty: false, sample: false}); S.cfg = newCfg(); S.step = 2; S.openRows.clear(); saveDraft(); updateCart(); go("proforma"); renderMain(); toast(src.no + " düzenlemeye açıldı"); }); break; }
     case "q-del": { const x = S.quotes.find(z => z.id === b.dataset.id); if (!x) break;
-      ask({title: "Proforma silinsin mi?", msg: `<b>${esc(x.no)}</b> · ${esc(x.buyer || "")} kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Sil", danger: true,
-        fn: async () => { try { await Store.del("quote", x.id); S.quotes = S.quotes.filter(z => z.id !== x.id); if (S.q.id === x.id) { S.q.saved = false; saveDraft(); } toast(x.no + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
+      ask({title: "Proforma silinsin mi?", msg: `<b>${esc(x.no)}</b> · ${esc(x.buyer || "")} kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Proformayı sil", danger: true,
+        fn: async () => { try { await Store.del("quote", x.id); S.quotes = S.quotes.filter(z => z.id !== x.id); if (S.q.id === x.id) { S.q.saved = false; saveDraft(); } toast(x.no + " silindi"); renderMain(); } catch (err) { toastErr("Silinemedi: " + authError(err)); } }}); break; }
     /* cari kart seçimi (proforma 1. adım) */
     case "pick": { const c = cariById(b.dataset.id); if (!c) break; applyCari(q, c); S.pick = {search: "", mode: ""}; touch(); if (companyChosen(q)) { toast(c.name + " seçildi"); setStep(2); } else { renderMain(); toast(c.name + " seçildi · şimdi firmayı seçin"); } break; }
     case "pick-co": { const c = companyById(b.dataset.id); if (!c) break; applyCompany(q, c); S.pick.co = false; touch(); if (cariChosen(q)) { toast(coName(c) + " seçildi"); setStep(2); } else { renderMain(); toast(coName(c) + " seçildi · şimdi cari kartı seçin"); } break; }
@@ -1265,20 +1324,20 @@ document.addEventListener("click", async e => {
     case "cari-quote": { const c = cariById(b.dataset.id); if (!c) break; guard("Yeni proforma açılırsa", () => { startNew(); applyCari(S.q, c); saveDraft(); updateCart(); S.step = 1; renderMain(); toast(c.name + " için yeni proforma · şimdi firmayı seçin"); }); break; }
     case "cari-del": { const c = cariById(b.dataset.id); if (!c) break; const n = cariStats(c).n;
       ask({title: "Cari kart silinsin mi?", msg: `<b>${esc(c.code)}</b> · ${esc(c.name)} kartı kalıcı olarak silinir.${n ? ` Bu karta ait ${n} proforma silinmez; bilgileri proformalarda kalır.` : ""}`, yes: "Sil", danger: true,
-        fn: async () => { try { await Store.del("customer", c.id); S.customers = S.customers.filter(z => z.id !== c.id); S.cariEdit = null; S.cari.sel = null; toast(c.name + " silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
+        fn: async () => { try { await Store.del("customer", c.id); S.customers = S.customers.filter(z => z.id !== c.id); S.cariEdit = null; S.cari.sel = null; toast(c.name + " silindi"); renderMain(); } catch (err) { toastErr("Silinemedi: " + authError(err)); } }}); break; }
     /* yönetim */
     case "gate-check": { const u = S.user; if (u) enter(u); break; }
     case "adm-refresh": loadUsers(); refreshAnn(); break;
     case "adm-pw": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) openPwModal(u); break; }
     case "adm-resetmail": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (!u) break; busy(b, true);
-      try { await Store.reset(u.email); $("confirm").hidden = true; toast(u.email + " adresine şifre sıfırlama bağlantısı gönderildi"); } catch (err) { toast(authError(err)); busy(b, false); } break; }
+      try { await Store.reset(u.email); $("confirm").hidden = true; toast(u.email + " adresine şifre sıfırlama bağlantısı gönderildi"); } catch (err) { toastErr(authError(err)); busy(b, false); } break; }
     case "pw-gen": { const inp = $("ap_pw"); if (inp) { inp.value = genPassword(); inp.dispatchEvent(new Event("input", {bubbles: true})); inp.select(); } break; }
     case "ann-dismiss": { const off = annOff(); off.push(isNaN(+b.dataset.id) ? b.dataset.id : +b.dataset.id); lsSet(annOffKey(), JSON.stringify(off.slice(-100))); renderMain(); break; }
-    case "ann-publish": { const A = S.annEdit; if (!A.title.trim()) { toast("Duyuru başlığı boş olamaz"); const t = $("an_title"); if (t) t.focus(); break; }
-      busy(b, true); try { await Store.addAnn({title: A.title.trim(), body: A.body.trim(), level: ANN_LEVEL[A.level] ? A.level : "info"}); S.annEdit = {title: "", body: "", level: "info"}; await refreshAnn(); toast("Duyuru yayınlandı"); } catch (err) { toast("Yayınlanamadı: " + authError(err)); busy(b, false); } break; }
-    case "ann-toggle": { const a = (S.ann || []).find(x => String(x.id) === b.dataset.id); if (!a) break; try { await Store.updAnn(a.id, {active: !a.active}); await refreshAnn(); toast(a.active ? "Duyuru yayından kaldırıldı" : "Duyuru yeniden yayında"); } catch (err) { toast(authError(err)); } break; }
+    case "ann-publish": { const A = S.annEdit; if (!A.title.trim()) { toastErr("Duyuru başlığı boş olamaz"); const t = $("an_title"); if (t) t.focus(); break; }
+      busy(b, true); try { await Store.addAnn({title: A.title.trim(), body: A.body.trim(), level: ANN_LEVEL[A.level] ? A.level : "info"}); S.annEdit = {title: "", body: "", level: "info"}; await refreshAnn(); toast("Duyuru yayınlandı"); } catch (err) { toastErr("Yayınlanamadı: " + authError(err)); busy(b, false); } break; }
+    case "ann-toggle": { const a = (S.ann || []).find(x => String(x.id) === b.dataset.id); if (!a) break; try { await Store.updAnn(a.id, {active: !a.active}); await refreshAnn(); toast(a.active ? "Duyuru yayından kaldırıldı" : "Duyuru yeniden yayında"); } catch (err) { toastErr(authError(err)); } break; }
     case "ann-del": { const a = (S.ann || []).find(x => String(x.id) === b.dataset.id); if (!a) break;
-      ask({title: "Duyuru silinsin mi?", msg: `<b>${esc(a.title)}</b> kalıcı olarak silinir.`, yes: "Sil", danger: true, fn: async () => { try { await Store.delAnn(a.id); await refreshAnn(); toast("Duyuru silindi"); } catch (err) { toast(authError(err)); } }}); break; }
+      ask({title: "Duyuru silinsin mi?", msg: `<b>${esc(a.title)}</b> kalıcı olarak silinir.`, yes: "Sil", danger: true, fn: async () => { try { await Store.delAnn(a.id); await refreshAnn(); toast("Duyuru silindi"); } catch (err) { toastErr(authError(err)); } }}); break; }
     case "cari-open": { const c = cariById(b.dataset.id); if (!c) break; S.cari.sel = c.id; S.cariEdit = {...c}; go("alicilar"); break; }
     case "adm-filter": S.admin.filter = b.dataset.f; renderMain(); break;
     case "adm-approve": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) adminAction("admin_set_status", {target: u.id, new_status: "active"}, u.email + " onaylandı"); break; }
@@ -1299,7 +1358,7 @@ document.addEventListener("click", async e => {
     case "lib-del": { const p = pById(b.dataset.id); if (!p) break;
       if (!isAdmin()) break;
       ask({title: "Ürün silinsin mi?", msg: `<b>${esc(p.code)}</b> · ${esc(p.name)} ortak kütüphaneden kaldırılır; hiçbir kullanıcı artık seçemez. Kayıtlı proformalar etkilenmez.`, yes: "Sil", danger: true,
-        fn: async () => { try { await Store.delShared("product", p.id); S.products = S.products.filter(z => z.id !== p.id); S.lib.sel = null; S.lib.edit = null; toast("Ürün silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
+        fn: async () => { try { await Store.delShared("product", p.id); S.products = S.products.filter(z => z.id !== p.id); S.lib.sel = null; S.lib.edit = null; toast("Ürün silindi"); renderMain(); } catch (err) { toastErr("Silinemedi: " + authError(err)); } }}); break; }
     /* firmalar */
     case "co-sel": S.co.sel = b.dataset.id; S.co.edit = coBuf(companyById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break;
     case "co-add": if (!isAdmin()) break; S.co.edit = coBuf(null); renderMain(); setTimeout(() => { const n = $("co_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
@@ -1309,7 +1368,7 @@ document.addEventListener("click", async e => {
     case "co-logo-clear": if (S.co.edit) { S.co.edit.logo = ""; renderMain(); } break;
     case "co-del": { const c = companyById(b.dataset.id); if (!c || !isAdmin()) break;
       ask({title: "Firma silinsin mi?", msg: `<b>${esc(coName(c))}</b> listeden kaldırılır ve yeni proformalarda seçilemez. Bu firmayla kesilmiş proformalar kendi kopyalarını korur.`, yes: "Sil", danger: true,
-        fn: async () => { try { await Store.delShared("company", c.id); S.companies = S.companies.filter(z => z.id !== c.id); S.co.sel = null; S.co.edit = null; toast("Firma silindi"); renderMain(); } catch (err) { toast("Silinemedi: " + authError(err)); } }}); break; }
+        fn: async () => { try { await Store.delShared("company", c.id); S.companies = S.companies.filter(z => z.id !== c.id); S.co.sel = null; S.co.edit = null; toast("Firma silindi"); renderMain(); } catch (err) { toastErr("Silinemedi: " + authError(err)); } }}); break; }
   }
 });
 
@@ -1325,6 +1384,8 @@ function fromHash() {
   if (S.view === "yonetim") loadUsers(true);
   if (S.view !== "alicilar" && S.view !== "proforma") { S.cariEdit = null; S.pick.mode = ""; }
   renderSide(); renderMain(); const m = $("main"); if (m) m.scrollTop = 0;
+  const a = document.activeElement;
+  if (prev !== S.view && !(a && a.closest && a.closest("#top"))) focusHeading("#main h1");
 }
 window.addEventListener("hashchange", fromHash);
 

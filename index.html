@@ -18,7 +18,10 @@
 </head>
 <body>
 <div id="root"><div class="loading"><img src="ndl.jpg" alt="NDL" width="64"><p>Yükleniyor…</p></div></div>
-<div class="toast" id="toast" role="status" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<!-- ekran okuyucu duyuruları: bölgeler açılıştan itibaren boş durur, metin sonradan yazılır -->
+<div class="sr-only" id="srStatus" role="status"></div>
+<div class="sr-only" id="srAlert" role="alert"></div>
 <div class="confirm-back" id="confirm" hidden></div>
 
 <script src="config.js"></script>
