@@ -336,6 +336,8 @@ function renderSide() {
     + `<span class="grow"></span>${Store.mode === "demo" ? `<span class="mode">Demo</span>` : ""}`;
 }
 function updateCart() { const c = $("cartCount"), t = $("cartTotal"); if (c) c.textContent = S.q.items.length; if (t) t.textContent = money(qTotal(S.q), S.q.currency); }
+/* yumuşak kaydırma yalnızca hareket azaltma istenmediğinde (stil dosyasındaki kural JavaScript kaydırmasına ulaşmaz) */
+const scrollMode = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
 /* Odaklı öğeyi yeniden çizimden sonra bulmak için seçici: kimlik, yoksa data-act ve ilgili data-* değerleri */
 function focusKey(a) {
   if (!a || a === document.body || !a.tagName) return null;
@@ -1274,7 +1276,7 @@ document.addEventListener("click", async e => {
     case "cfg-cancel": S.cfg = newCfg(c.mode); S.cfgTried = false; saveDraft(); renderMain(); break;
     case "cfg-add": {
       const miss = cfgMissing(c);
-      if (miss.length) { S.cfgTried = true; renderMain(); const n = document.querySelector("#formCard .need"); if (n) n.scrollIntoView({block: "center", behavior: "smooth"}); toastErr("Eksik: " + miss.join(", ")); break; }
+      if (miss.length) { S.cfgTried = true; renderMain(); const n = document.querySelector("#formCard .need"); if (n) n.scrollIntoView({block: "center", behavior: scrollMode()}); toastErr("Eksik: " + miss.join(", ")); break; }
       const it = cfgItem(c), code = itemInfo(it).code; let idx;
       if (c.edit != null && q.items[c.edit]) { idx = c.edit; q.items[idx] = it; toast(`${idx + 1}. kalem güncellendi`); }
       else { q.items.push(it); idx = q.items.length - 1; toast(`${code} proformaya eklendi · ${idx + 1}. kalem`); }
@@ -1319,7 +1321,7 @@ document.addEventListener("click", async e => {
     case "pick-cancel": S.pick.mode = ""; S.cariEdit = null; renderMain(); break;
     case "pick-save": { const c = await saveCari(b); if (!c) break; applyCari(q, c); S.pick = {search: "", mode: ""}; S.cariEdit = null; touch(); renderMain(); break; }
     /* cari kartlar sayfası */
-    case "cari-sel": { const c = cariById(b.dataset.id); if (!c) break; S.cari.sel = c.id; S.cariEdit = {...c}; S.cariTried = false; renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break; }
+    case "cari-sel": { const c = cariById(b.dataset.id); if (!c) break; S.cari.sel = c.id; S.cariEdit = {...c}; S.cariTried = false; renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: scrollMode()}); } break; }
     case "cari-new": S.cariEdit = normCari({code: nextCariCode()}); S.cariTried = false; S.cari.sel = null; if (S.view !== "alicilar") go("alicilar"); renderMain(); setTimeout(() => { const n = $("ce_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "cari-cancel": S.cariEdit = null; renderMain(); break;
     case "cari-save": { const c = await saveCari(b); if (c) { S.cari.sel = c.id; S.cariEdit = {...c}; renderMain(); } break; }
@@ -1350,7 +1352,7 @@ document.addEventListener("click", async e => {
       ask({title: "Hesap kalıcı olarak silinsin mi?", msg: `<b>${esc(u.email)}</b> hesabı ve bu hesaba ait <b>${esc(u.doc_count ?? 0)}</b> kayıt (proformalar, cari kartlar, ürünler, ayarlar) kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Kalıcı olarak sil", danger: true, fn: () => adminAction("admin_delete_user", {target: u.id}, u.email + " silindi")}); break; }
     /* ürünler */
     case "lib-type": S.lib.type = b.dataset.t; S.lib.sel = null; S.lib.edit = null; renderMain(); break;
-    case "lib-sel": S.lib.sel = b.dataset.id; S.lib.edit = editBuf(pById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break;
+    case "lib-sel": S.lib.sel = b.dataset.id; S.lib.edit = editBuf(pById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: scrollMode()}); } break;
     case "lib-img-up": { const i = $("libImg"); if (i) i.click(); break; }
     case "lib-img-clear": if (S.lib.edit) { S.lib.edit.img = ""; renderMain(); } break;
     case "lib-img-def": if (S.lib.edit) { S.lib.edit.img = catalogImg(S.lib.edit); renderMain(); } break;
@@ -1362,7 +1364,7 @@ document.addEventListener("click", async e => {
       ask({title: "Ürün silinsin mi?", msg: `<b>${esc(p.code)}</b> · ${esc(p.name)} ortak kütüphaneden kaldırılır; hiçbir kullanıcı artık seçemez. Kayıtlı proformalar etkilenmez.`, yes: "Sil", danger: true,
         fn: async () => { try { await Store.delShared("product", p.id); S.products = S.products.filter(z => z.id !== p.id); S.lib.sel = null; S.lib.edit = null; toast("Ürün silindi"); renderMain(); } catch (err) { toastErr("Silinemedi: " + authError(err)); } }}); break; }
     /* firmalar */
-    case "co-sel": S.co.sel = b.dataset.id; S.co.edit = coBuf(companyById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: "smooth"}); } break;
+    case "co-sel": S.co.sel = b.dataset.id; S.co.edit = coBuf(companyById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: scrollMode()}); } break;
     case "co-add": if (!isAdmin()) break; S.co.edit = coBuf(null); renderMain(); setTimeout(() => { const n = $("co_name"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "co-cancel": S.co.edit = null; renderMain(); break;
     case "co-save": saveCompany(b); break;
