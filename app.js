@@ -312,7 +312,7 @@ function authBody(m) {
 /* ---------- uygulama çerçevesi ---------- */
 const NAV = [["pano", "Pano", "pano"], ["proforma", "Proforma", "doc"], ["proformalar", "Kayıtlar", "stack"], ["alicilar", "Cari", "users"], ["urunler", "Ürünler", "cube"], ["firma", "Firmalar", "firm"]];
 function renderShell() {
-  root.innerHTML = `<div class="app"><header class="top" id="top"></header><nav class="side" id="side" aria-label="Menü"></nav><main class="main" id="main"></main></div>`;
+  root.innerHTML = `<button class="skip" data-act="skip">İçeriğe geç</button><div class="app"><header class="top" id="top"></header><nav class="side" id="side" aria-label="Menü"></nav><main class="main" id="main"></main></div>`;
   renderTop(); renderSide();
 }
 function initials() { const e = (S.user && S.user.email) || "?"; const n = e.split("@")[0].split(/[._-]+/).filter(Boolean); return ((n[0] || "?")[0] + ((n[1] || "")[0] || "")).toUpperCase(); }
@@ -323,7 +323,7 @@ function renderTop() {
    <div class="top-r">
      <a class="cart" href="#proforma" title="Açık proforma"><span class="ic">${ICON.doc}<i id="cartCount">${S.q.items.length}</i></span><span>Toplam: <b id="cartTotal">${money(qTotal(S.q), S.q.currency)}</b></span></a>
      <button class="round" data-act="theme" title="${isDark() ? "Açık tema" : "Koyu tema"}" aria-label="Temayı değiştir">${isDark() ? ICON.sun : ICON.moon}</button>
-     <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü">${esc(initials())}</button>
+     <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü${S.role === "admin" && S.pendingCount ? ` · ${S.pendingCount} onay bekleyen` : ""}">${esc(initials())}${S.role === "admin" && S.pendingCount ? `<i class="abadge" aria-hidden="true">${S.pendingCount}</i>` : ""}</button>
        ${S.menu === "user" ? `<div class="pop" role="menu"><div class="who"><b>${esc(S.user.email)}</b><span>${Store.mode === "demo" ? "Demo hesabı · bu tarayıcıda" : "Kayıtlarınız yalnızca bu hesapta"}</span></div>
          <a href="#pano" role="menuitem">${ICON.key} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firmalar</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
          <button class="danger" data-act="logout" role="menuitem">${ICON.out} Çıkış yap</button></div>` : ""}</div>
@@ -332,7 +332,7 @@ function renderTop() {
 function renderSide() {
   const s = $("side"); if (!s) return;
   const nav = S.role === "admin" ? [...NAV, ["yonetim", "Yönetim", "shield"]] : NAV;
-  s.innerHTML = nav.map(([v, l, ic]) => `<a href="#${v}"${S.view === v ? ' aria-current="page"' : ""}>${ICON[ic]}<span>${l}</span>${v === "yonetim" && S.pendingCount ? `<i class="nbadge" aria-label="${S.pendingCount} onay bekleyen">${S.pendingCount}</i>` : ""}</a>`).join("")
+  s.innerHTML = nav.map(([v, l, ic]) => `<a href="#${v}" data-v="${v}"${S.view === v ? ' aria-current="page"' : ""}>${ICON[ic]}<span>${l}</span>${v === "yonetim" && S.pendingCount ? `<i class="nbadge" aria-label="${S.pendingCount} onay bekleyen">${S.pendingCount}</i>` : ""}</a>`).join("")
     + `<span class="grow"></span>${Store.mode === "demo" ? `<span class="mode">Demo</span>` : ""}`;
 }
 function updateCart() { const c = $("cartCount"), t = $("cartTotal"); if (c) c.textContent = S.q.items.length; if (t) t.textContent = money(qTotal(S.q), S.q.currency); }
@@ -495,7 +495,7 @@ function cfgLift() {
      <figure class="plate" id="plate">${plateSvg(cfgSize(c), c.mat)}</figure></div></div>
    <div class="optbox"><div class="lbl">Opsiyonlar <em>${c.opts.length ? c.opts.length + " seçili · fiyatları birim fiyata eklenir" : "isteğe bağlı · her birinin fiyatı ayrıca girilir"}</em></div>
     <div class="chips">${optionProducts().map(op => { const on = c.opts.some(o => o.oid === op.id); return `<button class="chip" data-act="opt" data-id="${op.id}" aria-pressed="${on}"${dis}>${on ? ICON.check : ICON.plus}${esc(op.name)}</button>`; }).join("")}</div>
-    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${productImg(o.oid) ? `<img class="othumb" src="${esc(productImg(o.oid))}" alt="">` : ""}${esc(optName(o))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
+    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${productImg(o.oid) ? `<img class="othumb" src="${esc(thumbOf(productImg(o.oid)))}" alt="">` : ""}${esc(optName(o))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
    </div>`;
 }
 function cfgSpare() {
@@ -507,7 +507,7 @@ function cfgSpare() {
     <div class="fld"><label for="cqty">Adet</label>${qtyHtml()}</div>
     <div class="fld"><label for="cprice">Birim fiyat</label>${moneyIn("cprice", 'data-c="price"', c.price, S.cfgTried && !hasPrice(c.price))}</div>
     <div class="fld s2"><label for="c_note">Satır notu</label><select id="c_note" data-c="note">${NOTES.map(x => opt(x.v, c.note, x.l)).join("")}</select></div>
-    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center">${p.img ? `<img class="sthumb" src="${esc(p.img)}" alt="">` : ""}<span class="tag blue">${esc(p.code)}</span><b>${esc(p.name)}</b></div></div>` : ""}
+    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center">${p.img ? `<img class="sthumb" src="${esc(thumbOf(p.img))}" alt="">` : ""}<span class="tag blue">${esc(p.code)}</span><b>${esc(p.name)}</b></div></div>` : ""}
    </div>`;
 }
 function cfgFootHtml() {
@@ -554,7 +554,7 @@ function itemsCard() {
     const inf = itemInfo(it), open = S.openRows.has(i);
     const tags = [it.cap && `<span class="tag blue">${fmtInt(it.cap)} kg</span>`, it.mat && `<span class="tag grey">${esc(matLabel(it.mat))}</span>`, it.size && `<span class="tag grey num">${esc(it.size.replace("x", " × "))}</span>`,
       it.volt && `<span class="tag amber">${esc(voltLabel(it.volt))}</span>`, it.opts.length && `<span class="tag green">+${it.opts.length} opsiyon</span>`, it.note && `<span class="tag solid-amber">${esc(noteLabel(it.note))}</span>`].filter(Boolean).join("");
-    return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="thumb sm">${itemPhotos(it).main ? `<img src="${esc(itemPhotos(it).main)}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
+    return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="thumb sm">${itemPhotos(it).main ? `<img src="${esc(thumbOf(itemPhotos(it).main))}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
       <td class="r">${esc(it.qty)}</td><td class="r">${missingPrice(it) ? `<span class="tag red">Fiyat eksik</span>` : money(unitPrice(it), c)}</td><td class="r strong">${money(lineTotal(it), c)}</td>
       <td><div class="acts"><button class="btn sm" data-act="row-open" data-i="${i}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button>
         <button class="ibtn" data-act="li-edit" data-i="${i}" title="Düzenle" aria-label="${i + 1}. kalemi düzenle">${ICON.edit}</button>
@@ -744,12 +744,12 @@ function pageQuotes() {
      <div class="fld"><label for="f_c">Para birimi</label><select id="f_c" data-f="qCur"><option value="">Tümü</option>${Object.keys(CUR).map(k => opt(k, S.qCur, k)).join("")}</select></div>
      <div class="fld"><label for="f_from">Başlangıç</label><input id="f_from" type="date" data-f="qFrom" value="${esc(S.qFrom)}"></div>
      <div class="fld"><label for="f_to">Bitiş</label><input id="f_to" type="date" data-f="qTo" value="${esc(S.qTo)}"></div>
-     <button class="btn amber" data-act="f-clear" style="height:42px">${ICON.list} Tümünü Listele</button></div></section>
+     <button class="btn amber" data-act="f-clear">${ICON.list} Tümünü Listele</button></div></section>
     <section class="card"><dl class="sumbox"><div><dt>Proforma</dt><dd>${list.length}</dd></div>${Object.keys(CUR).map(k => `<div><dt>Toplam ${k}</dt><dd class="${k === "USD" ? "blue" : k === "EUR" ? "green" : ""}">${money(by[k] || 0, k)}</dd></div>`).join("")}</dl></section></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Proforma Listesi</h2><span class="muted small">${list.length} / ${S.quotes.length}</span>${fl ? `<button class="tag blue fchip" data-act="q-stage" data-k="" title="Aşama filtresini kaldır">${esc(fl)} ${ICON.x}</button>` : ""}
       <div class="acts"><div class="seg sm" role="group" aria-label="Liste görünümü"><button data-act="q-view" data-v="group" aria-pressed="${grouped}">${ICON.stack} Aşamaya göre</button><button data-act="q-view" data-v="list" aria-pressed="${!grouped}">${ICON.list} Tarihe göre</button></div></div></div>
     ${list.length ? `<div class="tbl-wrap"><table class="tbl qtbl"><thead><tr><th class="d-col">Tarih</th><th>No</th><th>Alıcı</th><th class="stg-th">Aşama</th><th class="c k-col">Kalem</th><th class="r k-col">Tutar</th><th></th></tr></thead>${body}</table></div>`
-      : `<div class="empty">${S.quotes.length ? (fl ? `“${esc(fl)}” aşamasında filtreyle eşleşen proforma yok.` : "Filtreyle eşleşen proforma yok.") : `Henüz kayıtlı proforma yok.<br>Proforma sayfasında <b>Proformayı Oluştur</b> dediğinizde burada listelenir.`}${S.quotes.length ? "" : `<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn blue" data-act="go" data-v="proforma">${ICON.plus} Proforma oluştur</button><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>`}</div>`}</section></div>`;
+      : `<div class="empty">${S.quotes.length ? (fl ? `“${esc(fl)}” aşamasında filtreyle eşleşen proforma yok.` : "Filtreyle eşleşen proforma yok.") + `<div><button class="btn" data-act="f-clear">${ICON.x} Filtreleri temizle</button></div>` : `Henüz kayıtlı proforma yok.<br>Proforma sayfasında <b>Proformayı Oluştur</b> dediğinizde burada listelenir.`}${S.quotes.length ? "" : `<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn blue" data-act="go" data-v="proforma">${ICON.plus} Proforma oluştur</button><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>`}</div>`}</section></div>`;
 }
 
 /* ---------- duyurular ---------- */
@@ -810,11 +810,11 @@ function monthChart(months) {
   const total = months.reduce((a, m) => a + m.n, 0);
   if (!total) return `<div class="empty">Son 6 ayda proforma yok. Oluşturdukça burada aylık dağılım görünür.</div>`;
   const max = Math.max(...months.map(m => m.n)), top = max <= 4 ? 4 : Math.ceil(max / 4) * 4, ticks = [top, top / 2, 0];
-  return `<div class="mchart" role="img" aria-label="Son 6 ayın aylık proforma sayısı">
+  return `<div class="mchart" role="group" aria-label="Son 6 ayın aylık proforma sayısı">
     <div class="mc-grid">${ticks.map(t => `<div class="mc-line" style="bottom:${t / top * 100}%"><span>${fmtInt(t)}</span></div>`).join("")}</div>
-    <div class="mc-bars">${months.map((m, i) => { const last = i === months.length - 1; return `<div class="mc-col" tabindex="0"><div class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%">${last && m.n ? `<em class="num">${m.n}</em>` : ""}</div>
-      <div class="mc-tip" role="tooltip"><b>${esc(m.full)}</b><span>${m.n} proforma</span>${m.n ? `<span>${byCurText(m.by)}</span>` : ""}</div><span class="mc-x">${esc(m.label)}</span></div>`; }).join("")}</div></div>
-    <table class="sr-only"><caption>Aylık proforma sayısı</caption><tr><th>Ay</th><th>Proforma</th><th>Tutar</th></tr>${months.map(m => `<tr><td>${esc(m.full)}</td><td>${m.n}</td><td>${byCurText(m.by) || "—"}</td></tr>`).join("")}</table>`;
+    <div class="mc-bars">${months.map((m, i) => { const last = i === months.length - 1, name = `${m.full}: ${m.n} proforma${m.n ? ", " + byCurText(m.by) : ""}`;
+      return `<button type="button" class="mc-col" data-act="mc-tip" data-i="${i}" aria-label="${esc(name)}"><span class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%">${last && m.n ? `<em class="num" aria-hidden="true">${m.n}</em>` : ""}</span>
+      <span class="mc-tip" aria-hidden="true"><b>${esc(m.full)}</b><span>${m.n} proforma</span>${m.n ? `<span>${byCurText(m.by)}</span>` : ""}</span><span class="mc-x" aria-hidden="true">${esc(m.label)}</span></button>`; }).join("")}</div></div>`;
 }
 function accountCard() {
   return `<section class="card" id="hesap"><div class="card-h"><h2 class="ttl">Hesap Ayarları</h2><span class="tag ${S.role === "admin" ? "blue" : "green"}">${S.role === "admin" ? "Yönetici" : "Kullanıcı"}</span>${Store.mode === "demo" ? `<span class="tag amber">Demo · bu tarayıcıda</span>` : ""}</div>
@@ -927,7 +927,7 @@ function pageLib() {
   if (!L.edit || (L.edit.id && !all.some(p => p.id === L.edit.id))) { const sel = pById(L.sel) || list[0]; L.edit = sel ? editBuf(sel) : null; }
   if (!adm && L.edit && !L.edit.id) L.edit = null;
   const e = L.edit, lift = L.type === "LIFT";
-  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="thumb">${p.img ? `<img src="${esc(p.img)}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(p.code)}</td><td>${esc(p.name)}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
+  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="thumb">${p.img ? `<img src="${esc(thumbOf(p.img))}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(p.code)}</td><td>${esc(p.name)}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
   return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Ortak kütüphane · ${all.length} ürün</div><h1>Ürünler</h1><p class="lead">Proformada seçilen modeller, kapasiteler, platform ölçüleri, opsiyonlar ve yedek parçalar. Kütüphane tüm kullanıcılar için ortaktır ve ${adm ? "yalnızca siz (yönetici) değiştirebilirsiniz" : "yalnızca yönetici değiştirebilir"}. Fiyatlar burada tutulmaz, her proformada girilir.</p></div>
      ${adm ? `<button class="btn blue" data-act="lib-add">${ICON.plus} Yeni Ürün</button>` : `<span class="tag grey">${ICON.lock} Salt okunur</span>`}</div>
    <div class="lib"><section class="card"><div class="lib-tools"><div class="seg" role="group" aria-label="Ürün türü">${Object.entries(TYPES).map(([k, v]) => `<button data-act="lib-type" data-t="${k}" aria-pressed="${L.type === k}">${v} <span class="muted">${all.filter(p => p.type === k).length}</span></button>`).join("")}</div>
@@ -1249,6 +1249,8 @@ document.addEventListener("click", async e => {
     case "reload": location.reload(); break;
     case "copy-sql": { const t = ($("sqlBox") || {}).textContent || ""; try { await navigator.clipboard.writeText(t); toast("SQL kopyalandı"); } catch (x) { const r = document.createRange(); r.selectNodeContents($("sqlBox")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); toast("Metin seçildi; kopyalayın"); } break; }
     /* çerçeve */
+    case "mc-tip": { const on = !b.classList.contains("on"); document.querySelectorAll(".mc-col.on").forEach(x => x.classList.remove("on")); b.classList.toggle("on", on); break; }   /* dokunmatikte ay değeri */
+    case "skip": focusHeading("#main h1"); break;
     case "theme": { const r = document.documentElement; r.classList.add("notr"); lsSet("ndl-theme", isDark() ? "light" : "dark"); applyTheme(); renderTop();
       void getComputedStyle(r).color; const off = () => r.classList.remove("notr"); requestAnimationFrame(() => requestAnimationFrame(off)); setTimeout(off, 200); break; }
     case "umenu": S.menu = S.menu === "user" ? null : "user"; renderTop(); break;

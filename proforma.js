@@ -72,6 +72,9 @@ const catalogImg = p => ((p && (CATALOG.find(x => x.id === p.id) || CAT_BY[p.typ
 const pById = id => products().find(p => p.id === id);
 /* proformadaki fotoğraf: kütüphanedeki güncel kayıt (yönetici kaldırdıysa yok); ürün kütüphaneden çıkarıldıysa katalogdaki fotoğraf */
 function productImg(id, snap) { const p = pById(id); return p ? str(p.img) : catalogImg(Object.assign({}, snap || {}, {id})); }
+/* liste ve önizleme için küçük kopya (img/thumbs, en uzun kenar 200 px); PDF/Excel ve ürün kartı asıl görseli kullanır.
+   Yöneticinin yüklediği görsel (data: URL) olduğu gibi kalır. */
+const thumbOf = s => { const m = /^img\/(?:lifts|options|spares)\/([^/]+\.jpg)$/.exec(String(s || "")); return m ? "img/thumbs/" + m[1] : str(s); };
 /* bir satırın fotoğrafları: ana ürün ve açıklamadaki sırasıyla opsiyonlar */
 const itemPhotos = it => ({main: productImg(it.pid, it.snap), opts: (it.opts || []).map(o => productImg(o.oid)).filter(Boolean)});
 const photoSrcs = q => [...new Set(q.items.flatMap(it => { const p = itemPhotos(it); return [p.main, ...p.opts]; }).filter(Boolean))];
@@ -282,7 +285,7 @@ function paperHtml(q, live) {
   const st = sellerOf(q), sp = isSpareOnly(q), c = q.currency, ls = logoSrc(q);
   const ph = hasPhotos(q, itemPhotos), n = ph ? 7 : 6;
   const photoTd = it => { const p = itemPhotos(it);
-    return `<td class="ph">${p.main ? `<img class="m" src="${esc(p.main)}" alt="">` : ""}${p.opts.length ? `<div class="ops">${p.opts.map(s => `<img src="${esc(s)}" alt="">`).join("")}</div>` : ""}</td>`; };
+    return `<td class="ph">${p.main ? `<img class="m" src="${esc(thumbOf(p.main))}" alt="">` : ""}${p.opts.length ? `<div class="ops">${p.opts.map(s => `<img src="${esc(thumbOf(s))}" alt="">`).join("")}</div>` : ""}</td>`; };
   const rows = q.items.map((it, i) => {
     const desc = descLines(it).map(l => l.map(s => s.red ? `<span class="red">${esc(s.t)}</span>` : esc(s.t)).join("")).join("<br>");
     const cls = [isPromo(it) ? "promo" : "", sp ? "sp" : "", live && S.flash === i ? "flash" : ""].filter(Boolean).join(" ");

@@ -48,6 +48,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `store.js` | Supabase oturumu ve kullanıcıya özel kayıt (ya da demo) |
 | `catalog.js` | NDL 2026 kataloğu: modeller, kapasiteler, platform ölçüleri, opsiyonlar, yedek parçalar (yalnızca katalogdan; fiyat ve müşteri bilgisi yok) |
 | `img/lifts/`, `img/options/`, `img/spares/` | Katalogdan alınmış ürün fotoğrafları (ürün başına bir JPEG; dosya adı ürün kimliğidir) |
+| `img/thumbs/` | Aynı fotoğrafların liste ve önizleme için 200 px kopyaları (PDF/Excel ve ürün kartı asıllarını kullanır) |
 | `config.js` | Supabase bağlantı bilgileri |
 | `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), ortak ürün kütüphanesi ve firmalar, proforma numarası, onay, duyuru ve yönetici fonksiyonları |
 | `duelsan.jpg`, `ndl.jpg` | Proforma logoları |
