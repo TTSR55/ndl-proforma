@@ -43,7 +43,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 
 | Dosya | İçerik |
 |---|---|
-| `index.html` | Sayfa iskeleti ve kütüphaneler |
+| `index.html` | Sayfa iskeleti ve kütüphaneler. Kendi dosyalarımız `?v=YYYYMMDD` sürümüyle çağrılır; her yayında bu sürüm artırılır ki tarayıcı eski ve yeni dosyaları karıştırmasın (GitHub Pages dosyaları 10 dakika önbellekte tutar) |
 | `styles.css` | Tasarım (SF Pro sistem fontu, açık/koyu tema, telefon yerleşimi) |
 | `app.js` | Arayüz: giriş, menü, sayfalar, olaylar |
 | `proforma.js` | Fiyat hesabı, proforma sayfası, PDF ve Excel üreticileri |
