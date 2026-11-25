@@ -328,7 +328,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 0.84375rem; }
 .toolbar > .card:first-child { display: flex; align-items: center; }
 .toolbar .filters { width: 100%; }
 .filters .btn { height: 42px; }
-.filters { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 14px; align-items: end; }
+.filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; align-items: end; }
+.filters .s-wide { grid-column: span 2; }
 .sumbox { display: grid; gap: 10px; align-content: center; font-size: 0.84375rem; }
 .sumbox div { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .sumbox dt { color: var(--ink-2); font-weight: 600; }
@@ -440,6 +441,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 0.84375rem; }
 .p-info .lb { font-weight: 700; width: 120px; }
 .p-info .rl { font-weight: 700; text-align: center; width: 80px; }
 .p-info .rv { text-align: center; width: 190px; }
+.p-info.tr .rl { width: 92px; }
 .p-warr { color: #E00000; font-weight: 700; font-style: italic; text-align: center; font-size: 8.5px; margin: 12px 0 18px; min-height: 11px; }
 .p-items th { font-size: 8.5px; font-weight: 700; height: 30px; }
 .p-items td { text-align: center; font-size: 9px; height: 54px; }
@@ -675,6 +677,13 @@ pre.sql { margin: 0; max-height: 260px; overflow: auto; background: var(--sunk);
 .co-list { max-height: none; }
 .co-logo-ed { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .blk-sep { height: 1px; background: var(--line); margin: 22px 0; }
+/* marka (NDL / DLP): logolu seçim */
+.seg button img { height: 18px; width: auto; border-radius: 3px; display: block; flex: none; }
+.brand-pick { display: flex; gap: 12px 20px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 18px; }
+.brand-pick > div:first-child { display: grid; gap: 2px; min-width: 0; flex: 1 1 240px; }
+.brand-pick .brand-seg { flex: 0 1 260px; min-width: 220px; }
+.lib-brand { margin-bottom: 12px; }
+.lib-brand .seg { max-width: 340px; }
 .kvs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; }
 .kvs .kv b { font-size: 0.84375rem; font-weight: 500; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .kvs { grid-template-columns: minmax(0, 1fr); } .tbl .thumb { display: none; } }

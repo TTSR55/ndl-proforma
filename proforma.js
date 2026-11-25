@@ -1,13 +1,44 @@
 /* proforma.js — veri modeli, fiyat hesabı, proforma sayfası, PDF ve Excel üreticileri. DOM'a dokunmaz. */
 "use strict";
 
-let LOGO_D = "", LOGO_N = "";            // data: URL; açılışta duelsan.jpg / ndl.jpg dosyalarından doldurulur
+let LOGO_D = "";                         // data: URL; açılışta duelsan.jpg dosyasından doldurulur
+let LOGO_B = {};                         // marka logoları (data: URL): {NDL, DLP}; açılışta ndl.jpg / dlp.jpg dosyalarından doldurulur
 let LOGO_S = "", LOGO_S_AR = 0;         // PDF/Excel üretilirken proformayı kesen firmanın logosu (data: URL) ve en/boy oranı
 let PHOTOS = {};                         // PDF/Excel üretilirken ürün ve opsiyon fotoğrafları: kaynak → {d: data URL, ar: en/boy}
 const XLSX_SRC = "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js";
 const XLSX_SRI = "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz";
 
+/* ---------- markalar ----------
+   NDL ve DLP aynı ürünleri aynı kod numarası ve ölçülerle kullanır. Kütüphanedeki tek kayıt iki markada da görünür;
+   kodun ve adın başındaki marka seçili markaya göre basılır (NDL 5010 ↔ DLP 5010). Yalnızca bir markaya ait ürün "brands" ile işaretlenir. */
+const BRANDS = ["NDL", "DLP"];
+const BRAND_IMG = {NDL: "ndl.jpg", DLP: "dlp.jpg"};
+let BRAND_DEF = "NDL";                   // yeni proformanın markası (son kullanılan; app.js günceller)
+const brandOf = q => (q && BRANDS.includes(q.brand)) ? q.brand : "NDL";
+const inBrand = (p, b) => !p || !Array.isArray(p.brands) || !p.brands.length || p.brands.includes(b);
+const bCode = (code, b) => String(code ?? "").replace(/^(NDL|DLP)(?=[\s\-.]|$)/i, b || "NDL");
+const bName = (name, b) => String(name ?? "").replace(/\b(NDL|DLP)\b/g, b || "NDL");
+
+/* ---------- proforma dili ----------
+   Arayüz Türkçedir; proforma çıktısı (önizleme, PDF, Excel) Türkçe ya da İngilizce basılır. */
+const LANGS = [{k: "tr", l: "Türkçe"}, {k: "en", l: "English"}];
+const LANG_BY = {tr: "Türkçe", en: "English"};
+const langOf = q => (q && q.lang === "tr") ? "tr" : "en";
+const OUT = {
+  en: {buyer: "BUYER", address: "ADDRESS", date: "DATE", no: "NO", payment: "PAYMENT TERM", delivery: "DELIVERY TERM", validity: "OFFER VALIDITY", dtime: "DELIVERY TIME",
+    origin: "ORIGIN OF THE GOODS", hs: "HS CODE", cNo: "NO", cCode: "CODE", cImg: "IMAGE", cDesc: "ITEM DESCRIPTION", cQty: "QUANTITY", cUnit: "UNIT PRICE", cTot: "TOTAL PRICE",
+    total: "TOTAL", bank: "BANK DETAILS", bBen: "BENEFICIARY:", bBank: "BANK:", bBranch: "BRANCH:", bIban: "IBAN:", bSwift: "SWIFT CODE:", draft: "DRAFT",
+    plat: "PLATFORM", platSize: "PLATFORM SIZE ", matSize: " PLATFORM SIZE ", mat: {ALU: "ALU", STEEL: "STEEL"}, or: " OR "},
+  tr: {buyer: "ALICI", address: "ADRES", date: "TARİH", no: "NO", payment: "ÖDEME ŞEKLİ", delivery: "TESLİM ŞEKLİ", validity: "TEKLİF GEÇERLİLİĞİ", dtime: "SEVKİYAT SÜRESİ",
+    origin: "MALIN MENŞEİ", hs: "GTİP NO", cNo: "NO", cCode: "KOD", cImg: "GÖRSEL", cDesc: "ÜRÜN AÇIKLAMASI", cQty: "MİKTAR", cUnit: "BİRİM FİYAT", cTot: "TOPLAM FİYAT",
+    total: "TOPLAM", bank: "BANKA BİLGİLERİ", bBen: "HESAP SAHİBİ:", bBank: "BANKA:", bBranch: "ŞUBE:", bIban: "IBAN:", bSwift: "SWIFT KODU:", draft: "TASLAK",
+    plat: "PLATFORM", platSize: "PLATFORM ÖLÇÜSÜ ", matSize: " PLATFORM ÖLÇÜSÜ ", mat: {ALU: "ALÜMİNYUM", STEEL: "ÇELİK"}, or: " VEYA "}
+};
+
 const TITLES   = ["PROFORMA INVOICE", "REVISED PROFORMA INVOICE", "QUOTATION", "PRICE OFFER"];
+const TITLE_TR = {"PROFORMA INVOICE": "PROFORMA FATURA", "REVISED PROFORMA INVOICE": "REVİZE PROFORMA FATURA", "QUOTATION": "TEKLİF", "PRICE OFFER": "FİYAT TEKLİFİ"};
+/* belge başlığı İngilizce anahtar olarak saklanır; Türkçe proformada karşılığı basılır */
+const titleText = q => (langOf(q) === "tr" && TITLE_TR[q.title]) || str(q && q.title);
 /* Şartlar için genel öneriler (Incoterms ve yaygın ödeme şekilleri). Yeni proformada hiçbiri seçili gelmez. */
 const PAYMENTS = ["100% ADVANCE PAYMENT", "50% ADVANCE PAYMENT, 50% BEFORE SHIPMENT", "30% ADVANCE PAYMENT, 70% BEFORE SHIPMENT", "CASH AGAINST DOCUMENTS", "L/C AT SIGHT"];
 const DELIVERY = ["EXW", "FCA", "FOB", "CFR", "CIF", "DAP", "DDP"];
@@ -15,7 +46,56 @@ const VALIDITY = ["7 DAYS", "15 DAYS", "30 DAYS"];
 const DTIME    = ["FROM STOCK", "2 WEEKS AFTER PAYMENT", "4 WEEKS AFTER PAYMENT", "6 WEEKS AFTER PAYMENT"];
 const VOLTS    = [{v: "12 V", l: "12 V"}, {v: "24 V", l: "24 V"}, {v: "12 OR 24 V", l: "12 / 24 V"}];
 const MATS     = [{v: "ALU", l: "Alüminyum"}, {v: "STEEL", l: "Çelik"}];
-const NOTES    = [{v: "", l: "Not yok"}, {v: "(PROMOTION)", l: "Promosyon"}, {v: "(FREE OF CHARGE)", l: "Ücretsiz"}, {v: "(SAMPLE)", l: "Numune"}];
+const NOTES    = [{v: "", l: "Not yok"}, {v: "(PROMOTION)", l: "Promosyon", tr: "(PROMOSYON)"}, {v: "(FREE OF CHARGE)", l: "Ücretsiz", tr: "(ÜCRETSİZ)"}, {v: "(SAMPLE)", l: "Numune", tr: "(NUMUNE)"}];
+
+/* Şartların Türkçe ve İngilizce karşılıkları. Listedeki ve aynı kalıptaki şartlar (ör. "45 DAYS" ↔ "45 GÜN") dil değişince çevrilir;
+   serbest yazılmış metin olduğu gibi kalır. Incoterms kodları iki dilde de aynıdır. */
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+const pairRule = (en, tr) => ({en: new RegExp("^" + escRe(en) + "$"), tr: new RegExp("^" + escRe(tr) + "$"), to: {en: () => en, tr: () => tr}});
+const T_UNIT = {en: {D: "DAY", W: "WEEK", M: "MONTH"}, tr: {D: "GÜN", W: "HAFTA", M: "AY"}};
+const unitKey = u => /^(D|GÜN|GUN)/.test(u) ? "D" : /^(W|HAFTA)/.test(u) ? "W" : "M";
+const unitIn = (n, u, lang) => lang === "tr" ? T_UNIT.tr[unitKey(u)] : T_UNIT.en[unitKey(u)] + (Number(n) === 1 ? "" : "S");
+const TERM_RULES = {
+  payment: [
+    {en: /^(\d{1,3}) ?% ADVANCE PAYMENT, ?(\d{1,3}) ?% BEFORE SHIPMENT$/, tr: /^% ?(\d{1,3}) PEŞİN, (?:KALAN )?% ?(\d{1,3}) SEVKİYAT ÖNCESİ$/,
+      to: {en: (a, b) => `${a}% ADVANCE PAYMENT, ${b}% BEFORE SHIPMENT`, tr: (a, b) => `%${a} PEŞİN, KALAN %${b} SEVKİYAT ÖNCESİ`}},
+    {en: /^(\d{1,3}) ?% ADVANCE PAYMENT$/, tr: /^% ?(\d{1,3}) PEŞİN ÖDEME$/, to: {en: a => `${a}% ADVANCE PAYMENT`, tr: a => `%${a} PEŞİN ÖDEME`}},
+    pairRule("CASH AGAINST DOCUMENTS", "VESAİK MUKABİLİ ÖDEME"),
+    pairRule("L/C AT SIGHT", "GÖRÜLDÜĞÜNDE ÖDEMELİ AKREDİTİF")
+  ],
+  delivery: [{en: /^(EXW|FCA|FAS|FOB|CFR|CIF|CPT|CIP|DAP|DPU|DDP)\b(.*)$/, tr: /^(EXW|FCA|FAS|FOB|CFR|CIF|CPT|CIP|DAP|DPU|DDP)\b(.*)$/, to: {en: (a, b) => a + b, tr: (a, b) => a + b}}],
+  validity: [{en: /^(\d{1,3}) ?(DAYS?|WEEKS?|MONTHS?)$/, tr: /^(\d{1,3}) ?(GÜN|HAFTA|AY)$/, to: {en: (n, u) => n + " " + unitIn(n, u, "en"), tr: (n, u) => n + " " + unitIn(n, u, "tr")}}],
+  dtime: [
+    pairRule("FROM STOCK", "STOKTAN SEVK"),
+    {en: /^(\d{1,3}) ?(DAYS?|WEEKS?|MONTHS?) AFTER PAYMENT$/, tr: /^ÖDEMEYİ TAKİBEN (\d{1,3}) ?(GÜN|HAFTA|AY)$/,
+      to: {en: (n, u) => `${n} ${unitIn(n, u, "en")} AFTER PAYMENT`, tr: (n, u) => `ÖDEMEYİ TAKİBEN ${n} ${unitIn(n, u, "tr")}`}}
+  ]
+};
+const TERM_KEYS = ["payment", "delivery", "validity", "dtime"];
+const TERM_LABEL = {payment: "Ödeme şekli", delivery: "Teslim şekli", validity: "Geçerlilik süresi", dtime: "Sevkiyat süresi"};
+/* bir şartı istenen dile çevirir: {v, ok}; ok=false ise metin tanınmadı (serbest yazılmış) ve olduğu gibi döner */
+function termTo(kind, v, lang) {
+  const s = String(v ?? "").trim().replace(/\s+/g, " "); if (!s) return {v: "", ok: true};
+  const E = s.toUpperCase(), T = s.toLocaleUpperCase("tr");
+  for (const r of TERM_RULES[kind] || []) { const m = r.en.exec(E) || r.tr.exec(T); if (m) return {v: r.to[lang === "tr" ? "tr" : "en"](...m.slice(1)), ok: true}; }
+  return {v: s, ok: false};
+}
+/* şart diğer dilin kalıbında mı yazılmış (ör. Türkçe proformada "15 DAYS") */
+function termForeign(kind, v, lang) {
+  const s = String(v ?? "").trim().replace(/\s+/g, " "); if (!s) return false;
+  const E = s.toUpperCase(), T = s.toLocaleUpperCase("tr"), rs = TERM_RULES[kind] || [];
+  const here = rs.some(r => (lang === "tr" ? r.tr.test(T) : r.en.test(E))), there = rs.some(r => (lang === "tr" ? r.en.test(E) : r.tr.test(T)));
+  return there && !here;
+}
+const termList = (kind, lang) => ({payment: PAYMENTS, delivery: DELIVERY, validity: VALIDITY, dtime: DTIME})[kind].map(v => termTo(kind, v, lang).v);
+/* proformanın dilini değiştirir ve tanınan şartları çevirir; çevrilemeyen (serbest yazılmış) şartların anahtarlarını döndürür */
+function setLang(q, lang) {
+  lang = lang === "tr" ? "tr" : "en"; const kept = [];
+  TERM_KEYS.forEach(k => { const r = termTo(k, q[k], lang); if (r.ok) q[k] = r.v; else kept.push(k); });
+  q.lang = lang; return kept;
+}
+/* cari kartın ülkesine göre önerilen dil: Türkiye → Türkçe, diğerleri → İngilizce */
+const autoLang = country => /^(TURKIYE|TURKEY|TR)$/.test(String(country ?? "").trim().toLocaleUpperCase("tr").replace(/İ/g, "I").replace(/Ü/g, "U")) ? "tr" : "en";
 const CUR      = {USD: "$", EUR: "€", TRY: "₺"};
 const TYPES    = {LIFT: "Liftler", OPTION: "Opsiyonlar", SPARE: "Yedek parça", OTHER: "Diğer"};
 const MONTHS   = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
@@ -23,9 +103,13 @@ const MONTHS   = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmu
 /* Firma ve banka bilgileri koda yazılmaz; yönetici "Firmalar" sayfasından girer (ör. Düelsan, Ahkos Otomotiv).
    Proforma oluşturulurken firma seçilir ve bilgileri proformaya kopyalanır; firma sonradan değişse de kesilmiş proforma değişmez. */
 const COMPANY_FIELDS = ["company", "address", "contact", "since", "brandNote", "warranty", "origin", "hs", "prefix",
-  "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift"];
+  "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift", "sinceTr", "brandNoteTr", "warrantyTr", "originTr"];
 const DEFAULT_SETTINGS = {company: "", address: "", contact: "", warranty: "", origin: "", hs: "",
-  beneficiary: "", bank: "", branch: "", ibanUSD: "", ibanEUR: "", ibanTRY: "", swift: "", prefix: "PI", since: "", brandNote: ""};
+  beneficiary: "", bank: "", branch: "", ibanUSD: "", ibanEUR: "", ibanTRY: "", swift: "", prefix: "PI", since: "", brandNote: "",
+  sinceTr: "", brandNoteTr: "", warrantyTr: "", originTr: ""};
+/* firmanın iki dilli metinleri: Türkçe proformada "…Tr" alanı, boşsa İngilizcesi basılır */
+const SELLER_TR = ["since", "brandNote", "warranty", "origin"];
+const sText = (st, k, lang) => (lang === "tr" && str(st[k + "Tr"]).trim()) || str(st[k]);
 /* firma kaydı olmayan eski proformalar eskisi gibi basılır */
 const LEGACY_HEAD = {since: "Since 1982...", brandNote: "The brand of Düelsan", logo: "duelsan.jpg"};
 
@@ -40,8 +124,8 @@ const S = {
   products: [], companies: [], settings: {}, quotes: [], customers: [],
   q: null, cfg: null, cfgTried: false, flash: null,
   openRows: new Set(), openQ: new Set(),
-  qSearch: "", qCur: "", qFrom: "", qTo: "", qStage: "", qView: "group", qColl: new Set(),
-  lib: {type: "LIFT", sel: null, search: "", edit: null}, co: {sel: null, edit: null},
+  qSearch: "", qCur: "", qBrand: "", qFrom: "", qTo: "", qStage: "", qView: "group", qColl: new Set(),
+  lib: {type: "LIFT", brand: "NDL", sel: null, search: "", edit: null}, co: {sel: null, edit: null},
   firm: null, menu: null, confirm: null, undo: null, busy: false
 };
 const products = () => (S.products.length ? S.products : CATALOG);
@@ -81,7 +165,14 @@ const photoSrcs = q => [...new Set(q.items.flatMap(it => { const p = itemPhotos(
 /* PDF/Excel'de yalnızca yüklenebilen fotoğraflar kullanılır */
 function loadedPhotos(it) { const p = itemPhotos(it); return {main: PHOTOS[p.main] ? p.main : "", opts: p.opts.filter(s => PHOTOS[s])}; }
 const hasPhotos = (q, get) => q.items.some(it => { const p = get(it); return !!(p.main || p.opts.length); });
-const optionProducts = () => products().filter(p => p.type === "OPTION");
+const optionProducts = b => products().filter(p => p.type === "OPTION" && inBrand(p, b || "NDL"));
+/* ürünün Türkçe adı: kütüphane kaydındaki (boş bırakıldıysa İngilizce ad), kayıtta hiç yoksa katalogdaki öneri */
+function trNameOf(p) {
+  if (!p) return "";
+  if (p.nameTr != null) return str(p.nameTr).trim();
+  return str((CATALOG.find(x => x.id === p.id) || {}).nameTr).trim();
+}
+const nameIn = (p, lang) => (lang === "tr" && trNameOf(p)) || str(p && p.name);
 function liftSizes(p) { if (!p) return []; const src = (p.sizes && p.sizes.length) ? p.sizes : ((CAT_BY[p.type + "|" + p.code] || {}).sizes || []); return src.map(s => parseSize(String(s))).filter(Boolean).map(m => m[0] + "x" + m[1]); }
 function allSizes(p) { const s = [...liftSizes(p)]; CATALOG_SIZES.forEach(x => { if (!s.includes(x)) s.push(x); }); return s; }
 
@@ -106,13 +197,14 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({"&": "&amp;", "<": "
 
 /* ---------- proforma modeli ---------- */
 function baseQuote() {
-  return {id: rid(), title: TITLES[0], no: "", date: today(), currency: "USD",
+  return {id: rid(), title: TITLES[0], no: "", date: today(), currency: "USD", brand: "NDL", lang: "en",
     customerId: "", buyer: "", address: "", city: "", country: "", contact: "", phone: "", email: "", taxOffice: "", taxId: "",
     payment: "", delivery: "", validity: "", dtime: "",
     items: [], status: "draft", saved: false, dirty: false};
 }
-/* Proforma numarasını oluşturma anında veritabanı verir (şirket genelinde tek sayaç, değiştirilemez). Taslakta numara yoktur. */
-function newQuote() { return Object.assign(baseQuote(), {hsCodes: []}); }
+/* Proforma numarasını oluşturma anında veritabanı verir (şirket genelinde tek sayaç, değiştirilemez). Taslakta numara yoktur.
+   Eski kayıtlar NDL markalı ve İngilizcedir; yeni proforma son kullanılan markayla açılır, dili cari kart seçilince belirlenir. */
+function newQuote() { return Object.assign(baseQuote(), {hsCodes: [], brand: BRANDS.includes(BRAND_DEF) ? BRAND_DEF : "NDL"}); }
 const str = v => (v == null ? "" : String(v));
 const numStr = v => (hasPrice(v) ? String(v) : "");
 function normItem(it) {
@@ -122,10 +214,10 @@ function normItem(it) {
   it.size = it.size && parseSize(str(it.size)) ? parseSize(str(it.size)).join("x") : "";
   it.qty = Math.max(0, Math.min(1e6, Math.round(Number(it.qty) || 0)));
   if (it.price !== "" && it.price != null) it.price = numStr(it.price);
-  if (it.snap) it.snap = {code: str(it.snap.code), name: str(it.snap.name), type: str(it.snap.type)};
+  if (it.snap) it.snap = Object.assign({code: str(it.snap.code), name: str(it.snap.name), type: str(it.snap.type)}, it.snap.nameTr != null ? {nameTr: str(it.snap.nameTr)} : {});
   if ((it.price === "" || it.price == null) && it.manual != null) it.price = it.manual;
   delete it.manual;
-  it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => ({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}));
+  it.opts = (Array.isArray(it.opts) ? it.opts : []).filter(o => o && o.oid).map(o => Object.assign({oid: str(o.oid), name: str(o.name), price: o.price === "" || o.price == null ? "" : numStr(o.price)}, o.nameTr != null ? {nameTr: str(o.nameTr)} : {}));
   return it;
 }
 const QUOTE_TEXT = ["id", "title", "no", "sysNo", "companyId", "customerId", "buyer", "address", "city", "country", "contact", "phone", "email", "taxOffice", "taxId", "payment", "delivery", "validity", "dtime"];
@@ -133,6 +225,7 @@ function normQuote(q) {
   q = Object.assign(baseQuote(), q);
   QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
   if (!CUR[q.currency]) q.currency = "USD";
+  q.brand = brandOf(q); q.lang = langOf(q);
   if (!DATE_RE.test(q.date)) q.date = today();
   q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
   if (Array.isArray(q.hsCodes)) { const seen = new Set(); q.hsCodes = q.hsCodes.map(normHs).filter(h => h && !seen.has(hsKey(h)) && seen.add(hsKey(h))).slice(0, HS_MAX); }
@@ -193,8 +286,8 @@ const TEMPLATE_BUYER = "ÖRNEK FİRMA A.Ş.";
 function templateQuote() {
   const L = (code, o) => { const p = CATALOG.find(x => x.code === code) || {}; return Object.assign({pid: p.id, snap: {code: p.code, name: p.name, type: p.type}, opts: [], note: ""}, o); };
   const op = n => { const p = CATALOG.find(x => x.type === "OPTION" && x.name === n); return p ? [{oid: p.id, name: p.name, price: "100"}] : []; };
-  const q = normQuote({buyer: TEMPLATE_BUYER, address: "Örnek Mahallesi, Deneme Caddesi No: 1", country: "TÜRKİYE", contact: "Ad Soyad",
-    payment: PAYMENTS[0], delivery: "EXW", validity: "15 DAYS", dtime: "FROM STOCK", sample: true, hsCodes: ["8428.90"],
+  const q = normQuote({buyer: TEMPLATE_BUYER, address: "Örnek Mahallesi, Deneme Caddesi No: 1", country: "TÜRKİYE", contact: "Ad Soyad", brand: BRAND_DEF, lang: "tr",
+    payment: termTo("payment", PAYMENTS[0], "tr").v, delivery: "EXW", validity: "15 GÜN", dtime: "STOKTAN SEVK", sample: true, hsCodes: ["8428.90"],
     seller: {company: "ÖRNEK SATICI A.Ş.", address: "Örnek Mahallesi, Örnek Caddesi No: 2, Şehir", contact: "Tel: +90 000 000 00 00 · E-posta: info@ornek.example",
       origin: "TÜRKİYE", beneficiary: "ÖRNEK SATICI A.Ş.", bank: "ÖRNEK BANKA", branch: "MERKEZ", ibanUSD: "TR00 0000 0000 0000 0000 0000 00", ibanEUR: "TR00 0000 0000 0000 0000 0000 00", ibanTRY: "TR00 0000 0000 0000 0000 0000 00", swift: "XXXXTRXX"},
     items: [L("NDL 5010", {cap: "750", mat: "ALU", size: "2200x1800", volt: "12 V", qty: 2, price: "1000"}),
@@ -210,39 +303,50 @@ const lineTotal   = it => unitPrice(it) * (Number(it.qty) || 0);
 const qTotal      = q => (q.items || []).reduce((a, it) => a + lineTotal(it), 0);
 const isPromo     = it => hasPrice(it.price) && unitPrice(it) === 0;
 const missingPrice = it => !hasPrice(it.price) || (it.opts || []).some(o => !hasPrice(o.price));
-function optName(o) { const p = pById(o.oid); return p ? p.name : (o.name || ""); }
-function itemInfo(it) { const p = pById(it.pid) || it.snap || {}; return {code: p.code || "", name: p.name || "", type: p.type || ""}; }
+/* ad ve kod: b verilirse markaya göre (NDL 5010 ↔ DLP 5010); verilmezse kütüphanedeki hâliyle (kayıt kopyası için) */
+function optName(o, b) { const p = pById(o.oid), n = p ? p.name : (o.name || ""); return b ? bName(n, b) : n; }
+function itemInfo(it, b) { const p = pById(it.pid) || it.snap || {}; return {code: b ? bCode(p.code, b) : (p.code || ""), name: b ? bName(p.name, b) : (p.name || ""), type: p.type || ""}; }
+/* proforma çıktısı için: proformanın markası ve dili */
+function itemOut(it, q) { const p = pById(it.pid) || Object.assign({id: it.pid}, it.snap || {}), b = brandOf(q); return {code: bCode(p.code, b), name: bName(nameIn(p, langOf(q)), b), type: p.type || ""}; }
+function optOut(o, q) { const p = pById(o.oid) || Object.assign({id: o.oid, name: o.name}, o.nameTr != null ? {nameTr: o.nameTr} : {}); return bName(nameIn(p, langOf(q)), brandOf(q)); }
+/* kayıt kopyası: proforma, ürün kütüphaneden çıkarılsa da kendi adıyla basılır */
+function prodSnap(p) { const t = p.nameTr != null ? str(p.nameTr) : trNameOf(p); return Object.assign({code: p.code, name: p.name, type: p.type}, t ? {nameTr: t} : {}); }
+/* Türkçe adı olmayan kalemler (Türkçe proformada İngilizce adıyla basılır) */
+const noTrName = q => q.items.filter(it => { const p = pById(it.pid) || Object.assign({id: it.pid}, it.snap || {}); return !trNameOf(p) || (it.opts || []).some(o => !trNameOf(pById(o.oid) || Object.assign({id: o.oid}, o.nameTr != null ? {nameTr: o.nameTr} : {}))); }).length;
 const isSpareOnly = q => q.items.length > 0 && q.items.every(it => { const t = itemInfo(it).type; return t === "SPARE" || t === "OTHER"; });
 const addrLine = q => [String(q.address || "").replace(/\s*\n\s*/g, ", ").trim(), q.city, q.country].filter(Boolean).join(", ");
 
 /* ---------- cari kart ---------- */
-const CARI_TEXT = ["code", "name", "taxOffice", "taxId", "address", "city", "country", "contact", "phone", "email", "currency", "payment", "delivery", "notes"];
+const CARI_TEXT = ["code", "name", "taxOffice", "taxId", "address", "city", "country", "contact", "phone", "email", "currency", "payment", "delivery", "notes", "lang"];
 function normCari(c) {
   const o = {id: str(c && c.id)}; CARI_TEXT.forEach(k => { o[k] = str(c && c[k]).slice(0, k === "notes" || k === "address" ? 1000 : 200); });
-  if (!CUR[o.currency]) o.currency = "USD"; o.createdAt = Number(c && c.createdAt) || 0; o.updatedAt = Number(c && c.updatedAt) || 0; return o;
+  if (!CUR[o.currency]) o.currency = "USD"; if (!LANG_BY[o.lang]) o.lang = "";   // boş: ülkeye göre
+  o.createdAt = Number(c && c.createdAt) || 0; o.updatedAt = Number(c && c.updatedAt) || 0; return o;
 }
+const cariLang = c => LANG_BY[c && c.lang] ? c.lang : autoLang(c && c.country);
 function nextCariCode() { let max = 0; S.customers.forEach(c => { const m = /^C(\d+)$/.exec(c.code || ""); if (m) max = Math.max(max, +m[1]); }); return "C" + String(max + 1).padStart(4, "0"); }
 /* seçilen cari kartın bilgileri proformaya kopyalanır (proforma kendi kopyasını saklar; kart sonradan değişse de eski proforma bozulmaz) */
 function applyCari(q, c) {
   Object.assign(q, {customerId: c.id, buyer: c.name, address: c.address, city: c.city, country: c.country, contact: c.contact, phone: c.phone, email: c.email, taxOffice: c.taxOffice, taxId: c.taxId});
-  if (!q.saved) { if (CUR[c.currency]) q.currency = c.currency; if (c.payment && !q.payment) q.payment = c.payment; if (c.delivery && !q.delivery) q.delivery = c.delivery; }
+  /* yeni proformada para birimi, dil ve varsayılan şartlar karttan gelir; şartlar proformanın diline çevrilir */
+  if (!q.saved) { if (CUR[c.currency]) q.currency = c.currency; if (c.payment && !q.payment) q.payment = c.payment; if (c.delivery && !q.delivery) q.delivery = c.delivery; setLang(q, cariLang(c)); }
   return q;
 }
 
-/* açıklama satırları [{t, red}] — önizleme, PDF ve Excel aynı metni kullanır */
-function descLines(it) {
-  const {name} = itemInfo(it); const L = [];
+/* açıklama satırları [{t, red}] — önizleme, PDF ve Excel aynı metni, proformanın dilinde kullanır */
+function descLines(it, q) {
+  const W = OUT[langOf(q)], {name} = itemOut(it, q); const L = [];
   if (name) L.push([{t: name}]);
   if (it.cap) L.push([{t: it.cap + " KG"}]);
-  if (it.volt) L.push([{t: it.volt, red: true}]);
+  if (it.volt) L.push([{t: it.volt.replace(/ OR /, W.or), red: true}]);
   if (it.mat || it.size) {
     const seg = [];
-    if (it.mat) seg.push({t: it.mat + " PLATFORM" + (it.size ? " SIZE " : "")});
-    if (it.size) { if (!it.mat) seg.push({t: "PLATFORM SIZE "}); seg.push({t: it.size, red: true}); }
+    if (it.mat) seg.push({t: (W.mat[it.mat] || it.mat) + (it.size ? W.matSize : " " + W.plat)});
+    if (it.size) { if (!it.mat) seg.push({t: W.platSize}); seg.push({t: it.size, red: true}); }
     L.push(seg);
   }
-  (it.opts || []).forEach(o => L.push([{t: "+ " + optName(o)}]));
-  if (it.note) L.push([{t: it.note}]);
+  (it.opts || []).forEach(o => L.push([{t: "+ " + optOut(o, q)}]));
+  if (it.note) L.push([{t: (langOf(q) === "tr" && (NOTES.find(n => n.v === it.note) || {}).tr) || it.note}]);
   return L;
 }
 
@@ -281,46 +385,49 @@ function cfgMissing(c) {
 const cfgUnit = c => num(c.price) + (c.mode === "lift" ? c.opts.reduce((a, o) => a + num(o.price), 0) : 0);
 
 /* ---------- proforma sayfası (HTML önizleme; PDF ile birebir) ---------- */
+/* proformanın üst bilgi satırları ve banka satırları: önizleme, PDF ve Excel aynı sırayı ve metni kullanır */
+function infoRows(q) {
+  const st = sellerOf(q), W = OUT[langOf(q)];
+  return [[W.buyer, q.buyer, W.date, fmtDate(q.date)], [W.address, addrLine(q), W.no, q.no || W.draft], [W.payment, q.payment, W.delivery, q.delivery],
+    [W.validity, q.validity, W.dtime, q.dtime], [W.origin, sText(st, "origin", langOf(q)), W.hs, hsText(q)]];
+}
+function bankRows(q) {
+  const st = sellerOf(q), W = OUT[langOf(q)], c = q.currency;
+  return [[W.bBen, st.beneficiary], [W.bBank, st.bank], [W.bBranch, st.branch], [c + " " + W.bIban, st["iban" + c] || ""], [W.bSwift, st.swift]];
+}
+const itemHead = (q, ph) => { const W = OUT[langOf(q)], c = q.currency; return [W.cNo, W.cCode, ...(ph ? [W.cImg] : []), W.cDesc, W.cQty, `${W.cUnit}(${c})`, `${W.cTot}(${c})`]; };
 function paperHtml(q, live) {
-  const st = sellerOf(q), sp = isSpareOnly(q), c = q.currency, ls = logoSrc(q);
+  const st = sellerOf(q), sp = isSpareOnly(q), c = q.currency, ls = logoSrc(q), lang = langOf(q), W = OUT[lang], b = brandOf(q);
   const ph = hasPhotos(q, itemPhotos), n = ph ? 7 : 6;
   const photoTd = it => { const p = itemPhotos(it);
     return `<td class="ph">${p.main ? `<img class="m" src="${esc(thumbOf(p.main))}" alt="">` : ""}${p.opts.length ? `<div class="ops">${p.opts.map(s => `<img src="${esc(thumbOf(s))}" alt="">`).join("")}</div>` : ""}</td>`; };
   const rows = q.items.map((it, i) => {
-    const desc = descLines(it).map(l => l.map(s => s.red ? `<span class="red">${esc(s.t)}</span>` : esc(s.t)).join("")).join("<br>");
+    const desc = descLines(it, q).map(l => l.map(s => s.red ? `<span class="red">${esc(s.t)}</span>` : esc(s.t)).join("")).join("<br>");
     const cls = [isPromo(it) ? "promo" : "", sp ? "sp" : "", live && S.flash === i ? "flash" : ""].filter(Boolean).join(" ");
-    return `<tr class="${cls}"${live ? ` data-act="li-edit" data-i="${i}" title="Düzenlemek için tıklayın"` : ""}><td>${i + 1}</td><td>${esc(itemInfo(it).code)}</td>${ph ? photoTd(it) : ""}<td>${desc}</td><td>${esc(it.qty)}</td><td class="money">${money(unitPrice(it), c)}</td><td class="money">${money(lineTotal(it), c)}</td></tr>`;
+    return `<tr class="${cls}"${live ? ` data-act="li-edit" data-i="${i}" title="Düzenlemek için tıklayın"` : ""}><td>${i + 1}</td><td>${esc(itemOut(it, q).code)}</td>${ph ? photoTd(it) : ""}<td>${desc}</td><td>${esc(it.qty)}</td><td class="money">${money(unitPrice(it), c)}</td><td class="money">${money(lineTotal(it), c)}</td></tr>`;
   }).join("");
-  const w = ph ? [30, 80, 96, 58, 92, 98] : [36, 90, 0, 66, 100, 108];
+  const w = ph ? [30, 80, 96, 58, 92, 98] : [36, 90, 0, 66, 100, 108], H = itemHead(q, ph), hw = ph ? [w[0], w[1], w[2], 0, w[3], w[4], w[5]] : [w[0], w[1], 0, w[3], w[4], w[5]];
   return `
-   <div class="p-head"><div>${ls ? `<img src="${esc(ls)}" alt="${esc(st.company)}" style="max-width:124px;max-height:44px;width:auto;height:auto">` : `<div style="height:40px"></div>`}<div class="p-since">${esc(st.since)}</div>
+   <div class="p-head"><div>${ls ? `<img src="${esc(ls)}" alt="${esc(st.company)}" style="max-width:124px;max-height:44px;width:auto;height:auto">` : `<div style="height:40px"></div>`}<div class="p-since">${esc(sText(st, "since", lang))}</div>
      <div class="p-co">${esc(st.company)}<br>${esc(st.address)}<br>${esc(st.contact)}</div></div>
-     <div><img src="${LOGO_N || "ndl.jpg"}" width="72" alt="NDL"><div class="p-brand">${esc(st.brandNote)}</div></div></div>
-   <div class="p-title">${esc(q.title)}</div>
-   <table class="p-info"><tbody>
-     <tr><td class="lb">BUYER</td><td>${esc(q.buyer)}</td><td class="rl">DATE</td><td class="rv">${fmtDate(q.date)}</td></tr>
-     <tr><td class="lb">ADDRESS</td><td>${esc(addrLine(q))}</td><td class="rl">NO</td><td class="rv">${esc(q.no || "TASLAK")}</td></tr>
-     <tr><td class="lb">PAYMENT TERM</td><td>${esc(q.payment)}</td><td class="rl">DELIVERY TERM</td><td class="rv">${esc(q.delivery)}</td></tr>
-     <tr><td class="lb">OFFER VALIDITY</td><td>${esc(q.validity)}</td><td class="rl">DELIVERY TIME</td><td class="rv">${esc(q.dtime)}</td></tr>
-     <tr><td class="lb">ORIGIN OF THE GOODS</td><td>${esc(st.origin)}</td><td class="rl">HS CODE</td><td class="rv">${esc(hsText(q))}</td></tr>
+     <div><img src="${LOGO_B[b] || BRAND_IMG[b]}" width="72" alt="${b}"><div class="p-brand">${esc(sText(st, "brandNote", lang))}</div></div></div>
+   <div class="p-title">${esc(titleText(q))}</div>
+   <table class="p-info${lang === "tr" ? " tr" : ""}"><tbody>
+     ${infoRows(q).map(r => `<tr><td class="lb">${esc(r[0])}</td><td>${esc(r[1])}</td><td class="rl">${esc(r[2])}</td><td class="rv">${esc(r[3])}</td></tr>`).join("")}
    </tbody></table>
-   <div class="p-warr">${esc(st.warranty)}</div>
-   <table class="p-items"><thead><tr><th style="width:${w[0]}px">NO</th><th style="width:${w[1]}px">CODE</th>${ph ? `<th style="width:${w[2]}px">IMAGE</th>` : ""}<th>ITEM DESCRIPTION</th><th style="width:${w[3]}px">QUANTITY</th><th style="width:${w[4]}px">UNIT PRICE(${esc(c)})</th><th style="width:${w[5]}px">TOTAL PRICE(${esc(c)})</th></tr></thead>
+   <div class="p-warr">${esc(sText(st, "warranty", lang))}</div>
+   <table class="p-items"><thead><tr>${H.map((h, i) => `<th${hw[i] ? ` style="width:${hw[i]}px"` : ""}>${esc(h)}</th>`).join("")}</tr></thead>
    <tbody>${rows || `<tr><td colspan="${n}" style="height:44px;color:#8a8a8a">Henüz kalem eklenmedi</td></tr>`}
-   <tr class="total"><td class="blank" colspan="${n - 3}"></td><td colspan="2">TOTAL</td><td class="money">${money(qTotal(q), c)}</td></tr></tbody></table>
-   <div class="p-bank-h">BANK DETAILS</div>
+   <tr class="total"><td class="blank" colspan="${n - 3}"></td><td colspan="2">${W.total}</td><td class="money">${money(qTotal(q), c)}</td></tr></tbody></table>
+   <div class="p-bank-h">${W.bank}</div>
    <table class="p-bank"><tbody>
-     <tr><td class="lb">BENEFICIARY:</td><td>${esc(st.beneficiary)}</td></tr>
-     <tr><td class="lb">BANK:</td><td>${esc(st.bank)}</td></tr>
-     <tr><td class="lb">BRANCH:</td><td>${esc(st.branch)}</td></tr>
-     <tr><td class="lb">${esc(c)} IBAN:</td><td>${esc(st["iban" + c] || "")}</td></tr>
-     <tr><td class="lb">SWIFT CODE:</td><td>${esc(st.swift)}</td></tr>
+     ${bankRows(q).map(r => `<tr><td class="lb">${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}
    </tbody></table>`;
 }
 
 /* ---------- PDF (pdfmake; Roboto Türkçe karakterleri kapsar) ---------- */
 function pdfDoc(q) {
-  const st = sellerOf(q), sp = isSpareOnly(q), B = "#000000", c = q.currency;
+  const st = sellerOf(q), sp = isSpareOnly(q), B = "#000000", c = q.currency, lang = langOf(q), W = OUT[lang], LB = LOGO_B[brandOf(q)];
   const ph = hasPhotos(q, loadedPhotos), n = ph ? 7 : 6, PW = 64;   // PW: fotoğraf sütununun iç genişliği (pt)
   const images = {}, key = {};
   photoSrcs(q).forEach((s, i) => { if (PHOTOS[s]) { key[s] = "ph" + i; images["ph" + i] = PHOTOS[s].d; } });
@@ -335,40 +442,39 @@ function pdfDoc(q) {
     return {stack, margin: [0, 3, 0, 3]};
   };
   const cell = (text, o = {}) => Object.assign({text, alignment: "center", margin: [2, sp ? 2 : 4, 2, sp ? 2 : 4]}, o);
-  const head = ["NO", "CODE", ...(ph ? ["IMAGE"] : []), "ITEM DESCRIPTION", "QUANTITY", "UNIT PRICE(" + c + ")", "TOTAL PRICE(" + c + ")"];
+  const head = itemHead(q, ph);
   const body = [head.map(h => cell(h, {bold: true, fontSize: 7.5, margin: [2, 6, 2, 6]}))];
   q.items.forEach((it, i) => {
-    const desc = descLines(it).flatMap((l, li) => [...(li ? [{text: "\n"}] : []), ...l.map(s => ({text: s.t, color: s.red ? "#E00000" : B}))]);
-    const row = [cell(String(i + 1)), cell(itemInfo(it).code), ...(ph ? [photoCell(it)] : []), cell(desc), cell(String(it.qty)), cell(money(unitPrice(it), c)), cell(money(lineTotal(it), c))];
+    const desc = descLines(it, q).flatMap((l, li) => [...(li ? [{text: "\n"}] : []), ...l.map(s => ({text: s.t, color: s.red ? "#E00000" : B}))]);
+    const row = [cell(String(i + 1)), cell(itemOut(it, q).code), ...(ph ? [photoCell(it)] : []), cell(desc), cell(String(it.qty)), cell(money(unitPrice(it), c)), cell(money(lineTotal(it), c))];
     if (isPromo(it)) row.forEach(x => { x.fillColor = "#FFFF00"; x.bold = true; });
     body.push(row);
   });
   const fill = k => Array.from({length: k}, () => ({}));
   if (!q.items.length) body.push([cell("", {colSpan: n}), ...fill(n - 1)]);
-  body.push([{text: "", colSpan: n - 3, border: [false, false, false, false]}, ...fill(n - 4), cell("TOTAL", {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", hsText(q)]]
-    .map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
-  const bank = [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
+  body.push([{text: "", colSpan: n - 3, border: [false, false, false, false]}, ...fill(n - 4), cell(W.total, {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
+  const info = infoRows(q).map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
+  const bank = bankRows(q).map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
   const thin = {hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B};
-  const left = [LOGO_S ? {image: LOGO_S, fit: [118, 40]} : {text: " ", fontSize: 26}, {text: st.since || "", fontSize: 7, margin: [104, 0, 0, 0]},
+  const left = [LOGO_S ? {image: LOGO_S, fit: [118, 40]} : {text: " ", fontSize: 26}, {text: sText(st, "since", lang), fontSize: 7, margin: [104, 0, 0, 0]},
     {text: [st.company, "\n", st.address, "\n", st.contact], fontSize: 7.5, lineHeight: 1.25, margin: [0, 2, 0, 0]}];
-  const right = [LOGO_N ? {image: LOGO_N, width: 62, alignment: "center"} : {text: ""}, {text: st.brandNote || "", italics: true, fontSize: 6.5, alignment: "center", margin: [0, 3, 0, 0]}];
+  const right = [LB ? {image: LB, width: 62, alignment: "center"} : {text: brandOf(q), bold: true, fontSize: 18, alignment: "center"}, {text: sText(st, "brandNote", lang), italics: true, fontSize: 6.5, alignment: "center", margin: [0, 3, 0, 0]}];
   return {pageSize: "A4", pageMargins: [32, 30, 32, 30], defaultStyle: {font: "Roboto", fontSize: 8, color: B},
-    info: {title: (q.title || "") + " " + (q.no || "")}, images,
+    info: {title: titleText(q) + " " + (q.no || "")}, images,
     content: [
       {columns: [{stack: left}, {width: 90, stack: right}]},
-      {text: q.title || "", bold: true, fontSize: 12, alignment: "center", margin: [0, 12, 0, 8]},
-      {table: {widths: [100, "*", 70, 160], body: info}, layout: Object.assign({paddingTop: () => 4, paddingBottom: () => 4}, thin), fontSize: 7.5},
-      {text: st.warranty || "", color: "#E00000", bold: true, italics: true, alignment: "center", fontSize: 7.5, margin: [0, 10, 0, 14]},
+      {text: titleText(q), bold: true, fontSize: 12, alignment: "center", margin: [0, 12, 0, 8]},
+      {table: {widths: [100, "*", lang === "tr" ? 80 : 70, 160], body: info}, layout: Object.assign({paddingTop: () => 4, paddingBottom: () => 4}, thin), fontSize: 7.5},
+      {text: sText(st, "warranty", lang), color: "#E00000", bold: true, italics: true, alignment: "center", fontSize: 7.5, margin: [0, 10, 0, 14]},
       {table: {headerRows: 1, dontBreakRows: true, widths: ph ? [20, 52, PW, "*", 40, 62, 66] : [24, 64, "*", 48, 74, 80], body}, layout: thin},
-      {text: "BANK DETAILS", bold: true, fontSize: 7.5, margin: [0, 14, 0, 2]},
+      {text: W.bank, bold: true, fontSize: 7.5, margin: [0, 14, 0, 2]},
       {table: {widths: [120, 220], body: bank}, layout: Object.assign({paddingTop: () => 2, paddingBottom: () => 2}, thin), fontSize: 7.5}
     ]};
 }
 
 /* ---------- Excel (ExcelJS) — PDF ile aynı sayfa, tutarlar formüllü ---------- */
 async function buildXlsx(EX, q) {
-  const st = sellerOf(q), c = q.currency, sym = CUR[c] || "", sp = isSpareOnly(q);
+  const st = sellerOf(q), c = q.currency, sym = CUR[c] || "", sp = isSpareOnly(q), lang = langOf(q), W = OUT[lang], LB = LOGO_B[brandOf(q)];
   /* fotoğraf varsa sütunlar: NO · CODE · IMAGE · ITEM DESCRIPTION · QUANTITY · UNIT · TOTAL */
   const ph = hasPhotos(q, loadedPhotos), K = ph ? {qty: "E", unit: "F", tot: "G", n: 7} : {qty: "D", unit: "E", tot: "F", n: 6};
   const wb = new EX.Workbook(); wb.creator = st.company || "NDL Proforma"; wb.created = new Date();
@@ -383,12 +489,13 @@ async function buildXlsx(EX, q) {
   const mfmt = `#,##0.00 "${sym}"`;
   [1, 2, 3, 4].forEach(r => ws.getRow(r).height = 14);
   if (LOGO_S) ws.addImage(wb.addImage({base64: LOGO_S, extension: /^data:image\/png/i.test(LOGO_S) ? "png" : "jpeg"}), {tl: {col: 0.08, row: 0.15}, ext: {width: LOGO_S_AR ? Math.round(Math.min(220, 54 * LOGO_S_AR)) : 154, height: 54}});
-  if (LOGO_N) ws.addImage(wb.addImage({base64: LOGO_N, extension: "jpeg"}), {tl: {col: K.n - 1 + 0.12, row: 0.1}, ext: {width: 96, height: 49}});
-  put("B5", st.since || "", {size: 7.5, italic: true}, {horizontal: "left", vertical: "top"});
-  put(K.tot + "5", st.brandNote || "", {size: 7, italic: true}, C());
+  if (LB) ws.addImage(wb.addImage({base64: LB, extension: "jpeg"}), {tl: {col: K.n - 1 + 0.12, row: 0.1}, ext: {width: 96, height: 49}});
+  else { ws.mergeCells(`${K.tot}1:${K.tot}4`); put(K.tot + "1", brandOf(q), {size: 18, bold: true}, C()); }
+  put("B5", sText(st, "since", lang), {size: 7.5, italic: true}, {horizontal: "left", vertical: "top"});
+  put(K.tot + "5", sText(st, "brandNote", lang), {size: 7, italic: true}, C());
   [[6, st.company], [7, st.address], [8, st.contact]].forEach(([r, v]) => { ws.mergeCells(`A${r}:${K.qty}${r}`); put("A" + r, v || "", {size: 8}, {horizontal: "left", vertical: "middle"}); ws.getRow(r).height = 12; });
-  ws.mergeCells(`A10:${K.tot}10`); put("A10", q.title || "", {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
-  const info = [["BUYER", q.buyer, "DATE", fmtDate(q.date)], ["ADDRESS", addrLine(q), "NO", q.no || "TASLAK"], ["PAYMENT TERM", q.payment, "DELIVERY TERM", q.delivery], ["OFFER VALIDITY", q.validity, "DELIVERY TIME", q.dtime], ["ORIGIN OF THE GOODS", st.origin, "HS CODE", hsText(q)]];
+  ws.mergeCells(`A10:${K.tot}10`); put("A10", titleText(q), {size: 12, bold: true}, C()); ws.getRow(10).height = 22;
+  const info = infoRows(q);
   info.forEach((r, i) => {
     const n = 12 + i;
     ws.mergeCells(`A${n}:B${n}`); if (ph) ws.mergeCells(`C${n}:D${n}`); ws.mergeCells(`${K.unit}${n}:${K.tot}${n}`);
@@ -397,9 +504,9 @@ async function buildXlsx(EX, q) {
     const lines = Math.max(Math.ceil(String(r[1] || "").length / 52), Math.ceil(String(r[3] || "").length / 28), r[2].length > 11 ? 2 : 1, 1);
     ws.getRow(n).height = lines > 1 ? 6 + 10 * lines : 16;
   });
-  ws.mergeCells(`A18:${K.tot}18`); put("A18", st.warranty || "", {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
+  ws.mergeCells(`A18:${K.tot}18`); put("A18", sText(st, "warranty", lang), {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
   const H = 20;
-  ["NO", "CODE", ...(ph ? ["IMAGE"] : []), "ITEM DESCRIPTION", "QUANTITY", `UNIT PRICE(${c})`, `TOTAL PRICE(${c})`].forEach((h, i) => { const x = ws.getCell(H, i + 1); x.value = h; x.font = F({bold: true}); x.alignment = C(); x.border = box; });
+  itemHead(q, ph).forEach((h, i) => { const x = ws.getCell(H, i + 1); x.value = h; x.font = F({bold: true}); x.alignment = C(); x.border = box; });
   ws.getRow(H).height = 28;
   /* fotoğraflar C sütununa piksel konumuyla yerleşir (sütun ≈ 98 px): ana ürün 88×58, opsiyonlar ikişerli 42×28 */
   const ids = {}; Object.keys(PHOTOS).forEach(s => { ids[s] = wb.addImage({base64: PHOTOS[s].d, extension: "jpeg"}); });
@@ -419,9 +526,9 @@ async function buildXlsx(EX, q) {
   };
   let r = H + 1;
   q.items.forEach((it, i) => {
-    const pr = isPromo(it), lines = descLines(it), base = {size: 8.5, bold: pr}, p = ph ? loadedPhotos(it) : null;
+    const pr = isPromo(it), lines = descLines(it, q), base = {size: 8.5, bold: pr}, p = ph ? loadedPhotos(it) : null;
     const runs = []; lines.forEach((l, li) => l.forEach((s, si) => runs.push({text: (li && !si ? "\n" : "") + s.t, font: F({...base, color: {argb: s.red ? "FFE00000" : "FF000000"}})})));
-    const vals = [i + 1, itemInfo(it).code, ...(ph ? [""] : []), {richText: runs}, Number(it.qty) || 0, unitPrice(it), {formula: `${K.qty}${r}*${K.unit}${r}`, result: lineTotal(it)}];
+    const vals = [i + 1, itemOut(it, q).code, ...(ph ? [""] : []), {richText: runs}, Number(it.qty) || 0, unitPrice(it), {formula: `${K.qty}${r}*${K.unit}${r}`, result: lineTotal(it)}];
     vals.forEach((v, ci) => {
       const x = ws.getCell(r, ci + 1); x.value = v; x.font = F(base); x.alignment = C(); x.border = box;
       if (ci >= K.n - 2) x.numFmt = mfmt;
@@ -433,11 +540,11 @@ async function buildXlsx(EX, q) {
   });
   if (!q.items.length) { for (let col = 1; col <= K.n; col++) ws.getCell(r, col).border = box; ws.getRow(r).height = 30; r++; }
   const last = r - 1;
-  ws.mergeCells(`${K.qty}${r}:${K.unit}${r}`); put(K.qty + r, "TOTAL", {bold: true}, C()); ws.getCell(K.qty + r).border = box; ws.getCell(K.unit + r).border = box;
+  ws.mergeCells(`${K.qty}${r}:${K.unit}${r}`); put(K.qty + r, W.total, {bold: true}, C()); ws.getCell(K.qty + r).border = box; ws.getCell(K.unit + r).border = box;
   const t = ws.getCell(K.tot + r); t.value = {formula: `SUM(${K.tot}${H + 1}:${K.tot}${last})`, result: qTotal(q)}; t.font = F({bold: true}); t.alignment = C(); t.numFmt = mfmt; t.border = box;
   ws.getRow(r).height = 20;
-  r += 2; put("A" + r, "BANK DETAILS", {bold: true}, {horizontal: "left", vertical: "middle", wrapText: false}); r++;
-  [["BENEFICIARY:", st.beneficiary], ["BANK:", st.bank], ["BRANCH:", st.branch], [c + " IBAN:", st["iban" + c] || ""], ["SWIFT CODE:", st.swift]].forEach(([a, b]) => {
+  r += 2; put("A" + r, W.bank, {bold: true}, {horizontal: "left", vertical: "middle", wrapText: false}); r++;
+  bankRows(q).forEach(([a, b]) => {
     ws.mergeCells(`A${r}:B${r}`); if (ph) ws.mergeCells(`C${r}:D${r}`); put("A" + r, a, {bold: true}); put("C" + r, b || "");
     for (let col = 1; col <= (ph ? 4 : 3); col++) ws.getCell(r, col).border = box;
     ws.getRow(r).height = 14; r++;

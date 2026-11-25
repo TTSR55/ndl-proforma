@@ -91,8 +91,12 @@ const isDark = () => { const t = document.documentElement.dataset.theme; return 
 /* ---------- logolar (PDF ve Excel için data: URL) ---------- */
 async function loadLogos() {
   const toData = async src => { const b = await (await fetch(src)).blob(); return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); }); };
-  try { LOGO_D = await toData("duelsan.jpg"); LOGO_N = await toData("ndl.jpg"); } catch (e) {}
+  try { LOGO_D = await toData("duelsan.jpg"); } catch (e) {}
+  await Promise.all(BRANDS.map(async b => { try { LOGO_B[b] = await toData(BRAND_IMG[b]); } catch (e) {} }));
 }
+/* son kullanılan marka yeni proformaların varsayılanıdır */
+const lastBrand = () => { const b = lsGet("ndl-brand"); return BRANDS.includes(b) ? b : "NDL"; };
+BRAND_DEF = lastBrand();
 
 /* ---------- açılış ve oturum ---------- */
 function framed() { try { return window.top !== window.self; } catch (e) { return true; } }
@@ -122,6 +126,7 @@ async function enter(u) {
   if (!prof || prof.status !== "active") { S.entering = false; renderGate(prof); return; }
   if (prof.must_change) { S.entering = false; renderForcePw(); return; }
   S.role = prof.role === "admin" ? "admin" : "user"; S.qView = lsGet("ndl-qview") === "list" ? "list" : "group";
+  S.lib.brand = BRANDS.includes(lsGet("ndl-libbrand")) ? lsGet("ndl-libbrand") : "NDL"; BRAND_DEF = lastBrand();
   try { S.ann = await Store.listAnn(); } catch (e) { S.ann = []; }
   try {
     ingest(await Store.loadAll());
@@ -398,6 +403,7 @@ function introHtml() {
   return `<div class="eyebrow">${esc(hasCari ? q.buyer : "Cari kart seçilmedi")}</div><h1>${q.saved ? "Proforma Düzenle" : "Proforma Oluştur"}</h1>
    <p class="lead">Firmayı ve cari kartı seçin, lifti yapılandırıp proformaya ekleyin, önizleyip oluşturun.</p><hr>
    <dl class="meta"><div><dt>Proforma no</dt><dd class="num">${q.no ? esc(q.no) : `<span class="muted" style="font-weight:500">oluşturulunca verilir</span>`}</dd></div><div><dt>Tarih</dt><dd>${fmtDate(q.date)}</dd></div><div><dt>Durum</dt><dd>${statusTag(q)}</dd></div>${q.saved ? `<div><dt>Aşama</dt><dd>${stageTag(q)}</dd></div>` : ""}
+     <div><dt>Marka · dil</dt><dd>${brandOf(q)} · ${LANG_BY[langOf(q)]}</dd></div>
      <div><dt>Toplam (${q.currency})</dt><dd class="amount">${money(qTotal(q), q.currency)}</dd></div></dl>
    <ol class="steps">${steps.map(([k, t, s]) => `<li><button class="${S.step === k ? "cur" : done(k) ? "done" : ""}${locked(k) ? " locked" : ""}" data-act="step" data-n="${k}"${S.step === k ? ' aria-current="step"' : ""}${locked(k) ? ` aria-disabled="true" title="${step1Msg(q)}"` : ""}><span class="n">${done(k) && S.step !== k ? ICON.check : k}</span><span style="min-width:0"><span class="t">${t}</span><span class="s">${esc(s)}</span></span></button></li>`).join("")}</ol>
    ${!S.companies.length ? `<div class="note-card"><b>Firma tanımlı değil</b>${isAdmin() ? `Proformayı kesecek firmaları (ör. Düelsan, Ahkos Otomotiv) bir kez ekleyin; her proformada bunlardan biri seçilir.<a class="link" href="#firma">Firma ekle ${ICON.right}</a>` : "Proforma oluşturmak için yöneticinin firma tanımlaması gerekiyor."}</div>` : ""}`;
@@ -430,8 +436,9 @@ function cariFields(e, need) {
     <div class="fld s2"><label for="ce_currency">Para birimi</label><select id="ce_currency" data-ce="currency">${Object.keys(CUR).map(k => opt(k, e.currency, k + " (" + CUR[k] + ")")).join("")}</select></div>
     ${f("contact", "Yetkili kişi", "s2", ' autocomplete="name"')}${f("phone", "Telefon", "", ' inputmode="tel"')}${f("email", "E-posta", "", ' type="email"')}
     ${f("payment", "Varsayılan ödeme şekli", "s2", ' list="dlPay"')}${f("delivery", "Varsayılan teslim şekli", "s2", ' list="dlDel"')}
+    <div class="fld s2"><label for="ce_lang">Proforma dili <em>yeni proformalarda</em></label><select id="ce_lang" data-ce="lang"><option value=""${LANG_BY[e.lang] ? "" : " selected"}>Ülkeye göre (Türkiye → Türkçe)</option>${LANGS.map(l => opt(l.k, e.lang, l.l)).join("")}</select></div>
     <div class="fld s4"><label for="ce_notes">Notlar <em>yalnızca kayıtta</em></label><textarea id="ce_notes" data-ce="notes" rows="2">${esc(e.notes)}</textarea></div>
-   </div>${dlist("dlPay", PAYMENTS)}${dlist("dlDel", DELIVERY)}`;
+   </div>${dlist("dlPay", termList("payment", cariLang(e)))}${dlist("dlDel", DELIVERY)}`;
 }
 function cariSummary(q) {
   const line = (k, v) => v ? `<div class="kv"><span>${k}</span><b>${esc(v)}</b></div>` : "";
@@ -451,11 +458,17 @@ function coPick() {
   return `<div class="card-h"><h2 class="ttl">Firma Seçin</h2><span class="muted small">Proformayı hangi firma kesiyor?</span>${S.pick.co && companyChosen(q) ? `<div class="acts"><button class="btn ghost sm" data-act="pick-co-cancel">Vazgeç</button></div>` : ""}</div>
     <div class="pick-list co-list">${S.companies.map(c => `<button class="pick co${c.id === q.companyId ? " on" : ""}" data-act="pick-co" data-id="${esc(c.id)}">${coLogo(c)}<span class="pk-main"><b>${esc(coName(c))}</b><span>${esc(c.company || "—")}</span></span>${ICON.right}</button>`).join("")}</div>`;
 }
+/* 1. adım: marka. Ürün kodları (NDL 5010 ↔ DLP 5010) ve sağ üstteki logo buna göre basılır. */
+function brandPick() {
+  const b = brandOf(S.q);
+  return `<div class="brand-pick"><div><span class="lbl" id="brandLbl">Marka</span><span class="muted small">Ürün kodları ve proformanın sağ üstündeki logo bu markayla basılır.</span></div>
+    <div class="seg brand-seg" role="group" aria-labelledby="brandLbl">${BRANDS.map(k => `<button data-act="q-brand" data-v="${k}" aria-pressed="${b === k}"><img src="${BRAND_IMG[k]}" alt="">${k}</button>`).join("")}</div></div>`;
+}
 const step1Missing = q => [companyChosen(q) ? "" : "firma", cariChosen(q) ? "" : "cari kart"].filter(Boolean);
 const step1Msg = q => { const m = step1Missing(q); return m.length === 2 ? "Önce firmayı ve cari kartı seçin" : m[0] === "firma" ? "Önce proformayı kesecek firmayı seçin" : "Önce bir cari kart seçin"; };
 function formBuyer() {
   const q = S.q, P = S.pick, card = cariById(q.customerId);
-  const top = (isBlank(q) && !q.companyId ? templateCard() : "") + coPick() + `<div class="blk-sep"></div>`;
+  const top = (isBlank(q) && !q.companyId ? templateCard() : "") + coPick() + brandPick() + `<div class="blk-sep"></div>`;
   if (P.mode === "new" || P.mode === "edit") return `<div class="card-h"><h2 class="ttl">${P.mode === "new" ? "Yeni Cari Kart" : "Cari Kartı Düzenle"}</h2></div>${cariFields(S.cariEdit, S.cariTried)}
     <div class="card-f"><button class="btn ghost" data-act="pick-cancel">Vazgeç</button><div class="grow muted small">Kart kaydedilir ve bu proforma için seçilir.</div><div class="btns"><button class="btn blue" data-act="pick-save">${ICON.check} Kaydet ve Seç</button></div></div>`;
   if ((card || (q.saved && q.buyer.trim())) && P.mode !== "change") return `${top}<div class="card-h"><h2 class="ttl">Cari Kart</h2><div class="acts">${card ? `<button class="btn sm" data-act="pick-edit">${ICON.edit} Kartı düzenle</button>` : ""}<button class="btn sm" data-act="pick-change">${ICON.users} Değiştir</button></div></div>
@@ -473,47 +486,47 @@ function qtyHtml() { return `<div class="qty"><button data-act="qty" data-d="-1"
 function formProducts() {
   const c = S.cfg, ed = c.edit != null && S.q.items[c.edit];
   return `<h2 class="sr-only">Ürün Ekle</h2><div class="tabs" role="tablist"><button role="tab" data-act="mode" data-v="lift" aria-selected="${c.mode === "lift"}">Lift</button><button role="tab" data-act="mode" data-v="spare" aria-selected="${c.mode === "spare"}">Yedek Parça</button></div>
-    ${ed ? `<div class="edit-note"><span>${c.edit + 1}. kalemi düzenliyorsunuz · ${esc(itemInfo(ed).code)}</span><button class="link" data-act="cfg-cancel">Vazgeç</button></div>` : ""}
+    ${ed ? `<div class="edit-note"><span>${c.edit + 1}. kalemi düzenliyorsunuz · ${esc(itemInfo(ed, brandOf(S.q)).code)}</span><button class="link" data-act="cfg-cancel">Vazgeç</button></div>` : ""}
     ${c.mode === "lift" ? cfgLift() : cfgSpare()}
     <div class="card-f" id="cfgFoot">${cfgFootHtml()}</div>`;
 }
 function cfgLift() {
-  const c = S.cfg, p = pById(c.pid), miss = S.cfgTried ? cfgMissing(c) : [], nd = k => miss.includes(k) ? "need" : "";
-  const lifts = products().filter(x => x.type === "LIFT"), fam = {};
+  const c = S.cfg, p = pById(c.pid), miss = S.cfgTried ? cfgMissing(c) : [], nd = k => miss.includes(k) ? "need" : "", B = brandOf(S.q);
+  const lifts = products().filter(x => x.type === "LIFT" && (inBrand(x, B) || x.id === c.pid)), fam = {};
   lifts.forEach(x => { (fam[x.name] = fam[x.name] || []).push(x); });
   const caps = p ? (p.caps || []).map(String) : []; if (c.cap && !caps.includes(String(c.cap))) caps.push(String(c.cap));
   const cat = p ? liftSizes(p) : [], std = CATALOG_SIZES.filter(s => !cat.includes(s)), sv = c.sizeMode === "custom" ? "custom" : c.size;
   if (c.sizeMode === "std" && c.size && !cat.includes(c.size) && !std.includes(c.size)) std.push(c.size);
   const dis = p ? "" : " disabled", sz = s => s.replace("x", " × ") + " mm";
   return `<div class="cfg"><div class="fgrid">
-    <div class="fld s2"><label for="c_pid">Lift modeli</label><select id="c_pid" data-c="pid" class="${nd("model")}"><option value="">Kütüphaneden model seçin (${lifts.length})</option>${Object.entries(fam).map(([n, ps]) => `<optgroup label="${esc(n)}">${ps.map(x => opt(x.id, c.pid, x.code + "   ·   " + capRange(x))).join("")}</optgroup>`).join("")}</select></div>
+    <div class="fld s2"><label for="c_pid">Lift modeli</label><select id="c_pid" data-c="pid" class="${nd("model")}"><option value="">${B} kütüphanesinden model seçin (${lifts.length})</option>${Object.entries(fam).map(([n, ps]) => `<optgroup label="${esc(bName(n, B))}">${ps.map(x => opt(x.id, c.pid, bCode(x.code, B) + "   ·   " + capRange(x))).join("")}</optgroup>`).join("")}</select></div>
     <div class="fld"><label for="c_cap">Kapasite</label><select id="c_cap" data-c="cap" class="${nd("kapasite")}"${dis}><option value="">${p && !caps.length ? "Tanımlı değil" : "Seçin"}</option>${caps.map(v => opt(v, c.cap, fmtInt(v) + " kg")).join("")}</select></div>
     <div class="fld"><label for="cqty">Adet</label>${qtyHtml()}</div>
     <div class="fld s2"><span class="lbl">Kapak türü</span><div class="seg ${nd("kapak türü")}" role="group" aria-label="Kapak türü">${MATS.map(m => `<button data-act="mat" data-v="${m.v}" aria-pressed="${c.mat === m.v}"${dis}>${swatch(m.v)}${m.l}</button>`).join("")}</div></div>
     <div class="fld s2"><span class="lbl">Powerpack voltajı</span><div class="seg ${nd("powerpack")}" role="group" aria-label="Powerpack voltajı">${VOLTS.map(v => `<button data-act="volt" data-v="${v.v}" aria-pressed="${c.volt === v.v}"${dis}>${v.l}</button>`).join("")}</div></div>
-    <div class="fld s2"><label for="c_size">Platform boyutu</label><select id="c_size" data-c="sizeSel" class="${nd("boyut")}"${dis}><option value="">Boyut seçin</option>${cat.length ? `<optgroup label="Katalog ölçüleri · ${esc(p.code)}">${cat.map(s => opt(s, sv, sz(s))).join("")}</optgroup>` : ""}<optgroup label="Diğer katalog ölçüleri">${std.map(s => opt(s, sv, sz(s))).join("")}</optgroup><option value="custom"${sv === "custom" ? " selected" : ""}>Özel boyut gir…</option></select></div>
+    <div class="fld s2"><label for="c_size">Platform boyutu</label><select id="c_size" data-c="sizeSel" class="${nd("boyut")}"${dis}><option value="">Boyut seçin</option>${cat.length ? `<optgroup label="Katalog ölçüleri · ${esc(bCode(p.code, B))}">${cat.map(s => opt(s, sv, sz(s))).join("")}</optgroup>` : ""}<optgroup label="Diğer katalog ölçüleri">${std.map(s => opt(s, sv, sz(s))).join("")}</optgroup><option value="custom"${sv === "custom" ? " selected" : ""}>Özel boyut gir…</option></select></div>
     ${c.sizeMode === "custom" ? `<div class="fld"><label for="cw">Genişlik (mm)</label><input id="cw" type="number" inputmode="numeric" min="300" max="5000" step="10" data-c="w" value="${esc(c.w)}" placeholder="2400"${S.cfgTried && !cfgSize(c) ? ' class="need"' : ""}></div>
       <div class="fld"><label for="cd">Uzunluk (mm)</label><input id="cd" type="number" inputmode="numeric" min="300" max="5000" step="10" data-c="d" value="${esc(c.d)}" placeholder="1800"${S.cfgTried && !cfgSize(c) ? ' class="need"' : ""}></div>` : ""}
     <div class="fld"><label for="cprice">Ana ürün birim fiyatı</label>${moneyIn("cprice", 'data-c="price"', c.price, S.cfgTried && !hasPrice(c.price))}</div>
     <div class="fld"><label for="c_note">Satır notu</label><select id="c_note" data-c="note">${NOTES.map(x => opt(x.v, c.note, x.l)).join("")}</select></div>
    </div>
-   <div class="plate-wrap">${p && p.img ? `<figure class="pphoto sm"><img src="${esc(p.img)}" alt="${esc(p.code)}"></figure>` : ""}${p ? `<div class="model-card"><b>${esc(p.code)}</b><span>${esc(p.name)}</span><small>${capRange(p)}${cat.length ? " · katalog: " + cat.map(s => s.replace("x", "×")).join(", ") : ""}</small></div>` : ""}
+   <div class="plate-wrap">${p && p.img ? `<figure class="pphoto sm"><img src="${esc(p.img)}" alt="${esc(bCode(p.code, B))}"></figure>` : ""}${p ? `<div class="model-card"><b>${esc(bCode(p.code, B))}</b><span>${esc(bName(p.name, B))}</span><small>${capRange(p)}${cat.length ? " · katalog: " + cat.map(s => s.replace("x", "×")).join(", ") : ""}</small></div>` : ""}
      <figure class="plate" id="plate">${plateSvg(cfgSize(c), c.mat)}</figure></div></div>
    <div class="optbox"><div class="lbl">Opsiyonlar <em>${c.opts.length ? c.opts.length + " seçili · fiyatları birim fiyata eklenir" : "isteğe bağlı · her birinin fiyatı ayrıca girilir"}</em></div>
-    <div class="chips">${optionProducts().map(op => { const on = c.opts.some(o => o.oid === op.id); return `<button class="chip" data-act="opt" data-id="${op.id}" aria-pressed="${on}"${dis}>${on ? ICON.check : ICON.plus}${esc(op.name)}</button>`; }).join("")}</div>
-    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${productImg(o.oid) ? `<img class="othumb" src="${esc(thumbOf(productImg(o.oid)))}" alt="">` : ""}${esc(optName(o))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
+    <div class="chips">${optionProducts(B).map(op => { const on = c.opts.some(o => o.oid === op.id); return `<button class="chip" data-act="opt" data-id="${op.id}" aria-pressed="${on}"${dis}>${on ? ICON.check : ICON.plus}${esc(bName(op.name, B))}</button>`; }).join("")}</div>
+    ${c.opts.length ? `<div class="optsel">${c.opts.map((o, i) => `<div class="r"><span>${productImg(o.oid) ? `<img class="othumb" src="${esc(thumbOf(productImg(o.oid)))}" alt="">` : ""}${esc(optName(o, B))}</span>${moneyIn("opp_" + o.oid, `data-co="${i}" aria-label="${esc(optName(o, B))} fiyatı"`, o.price, S.cfgTried && !hasPrice(o.price), "Fiyat")}<button class="ibtn danger" data-act="opt" data-id="${o.oid}" title="Kaldır" aria-label="${esc(optName(o, B))} opsiyonunu kaldır">${ICON.x}</button></div>`).join("")}</div>` : ""}
    </div>`;
 }
 function cfgSpare() {
-  const c = S.cfg, miss = S.cfgTried ? cfgMissing(c) : [], p = pById(c.pid);
-  const grp = t => products().filter(x => x.type === t);
-  const og = (t, l) => grp(t).length ? `<optgroup label="${l}">${grp(t).map(x => opt(x.id, c.pid, x.code + "   ·   " + x.name)).join("")}</optgroup>` : "";
+  const c = S.cfg, miss = S.cfgTried ? cfgMissing(c) : [], p = pById(c.pid), B = brandOf(S.q);
+  const grp = t => products().filter(x => x.type === t && (inBrand(x, B) || x.id === c.pid));
+  const og = (t, l) => grp(t).length ? `<optgroup label="${l}">${grp(t).map(x => opt(x.id, c.pid, bCode(x.code, B) + "   ·   " + bName(x.name, B))).join("")}</optgroup>` : "";
   return `<div class="fgrid">
     <div class="fld s2"><label for="c_pid">Parça</label><select id="c_pid" data-c="pid" class="${miss.includes("parça") ? "need" : ""}"><option value="">Parça seçin (${grp("SPARE").length + grp("OTHER").length})</option>${og("SPARE", "Yedek parça")}${og("OTHER", "Diğer")}</select></div>
     <div class="fld"><label for="cqty">Adet</label>${qtyHtml()}</div>
     <div class="fld"><label for="cprice">Birim fiyat</label>${moneyIn("cprice", 'data-c="price"', c.price, S.cfgTried && !hasPrice(c.price))}</div>
     <div class="fld s2"><label for="c_note">Satır notu</label><select id="c_note" data-c="note">${NOTES.map(x => opt(x.v, c.note, x.l)).join("")}</select></div>
-    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center">${p.img ? `<img class="sthumb" src="${esc(thumbOf(p.img))}" alt="">` : ""}<span class="tag blue">${esc(p.code)}</span><b>${esc(p.name)}</b></div></div>` : ""}
+    ${p ? `<div class="fld s2"><span class="lbl">Seçili parça</span><div class="tags" style="margin:0;min-height:42px;align-items:center">${p.img ? `<img class="sthumb" src="${esc(thumbOf(p.img))}" alt="">` : ""}<span class="tag blue">${esc(bCode(p.code, B))}</span><b>${esc(bName(p.name, B))}</b></div></div>` : ""}
    </div>`;
 }
 function cfgFootHtml() {
@@ -557,7 +570,7 @@ function outBtns(src) { return `<button class="btn amber" data-act="out" data-k=
 function itemsCard() {
   const q = S.q, c = q.currency;
   const rows = q.items.map((it, i) => {
-    const inf = itemInfo(it), open = S.openRows.has(i);
+    const inf = itemInfo(it, brandOf(q)), open = S.openRows.has(i);
     const tags = [it.cap && `<span class="tag blue">${fmtInt(it.cap)} kg</span>`, it.mat && `<span class="tag grey">${esc(matLabel(it.mat))}</span>`, it.size && `<span class="tag grey num">${esc(it.size.replace("x", " × "))}</span>`,
       it.volt && `<span class="tag amber">${esc(voltLabel(it.volt))}</span>`, it.opts.length && `<span class="tag green">+${it.opts.length} opsiyon</span>`, it.note && `<span class="tag solid-amber">${esc(noteLabel(it.note))}</span>`].filter(Boolean).join("");
     return `<tr class="row${isPromo(it) ? " promo" : ""}${S.flash === i ? " flash" : ""}"><td class="c muted">${i + 1}</td><td class="thumb sm">${itemPhotos(it).main ? `<img src="${esc(thumbOf(itemPhotos(it).main))}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(inf.code)}</td><td><b>${esc(inf.name)}</b>${tags ? `<div class="tags">${tags}</div>` : ""}</td>
@@ -567,7 +580,7 @@ function itemsCard() {
         <button class="ibtn" data-act="li-up" data-i="${i}" title="Yukarı" aria-label="Yukarı taşı"${i === 0 ? " disabled" : ""}>${ICON.up}</button>
         <button class="ibtn" data-act="li-down" data-i="${i}" title="Aşağı" aria-label="Aşağı taşı"${i === q.items.length - 1 ? " disabled" : ""}>${ICON.down}</button>
         <button class="ibtn danger" data-act="li-del" data-i="${i}" title="Sil" aria-label="${i + 1}. kalemi sil">${ICON.trash}</button></div></td></tr>
-      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Ana ürün fiyatı", money(basePrice(it), c))}${it.opts.map(o => kv("+ " + optName(o), money(num(o.price), c))).join("")}${kv("Birim fiyat", money(unitPrice(it), c), "blue")}${kv("Adet", esc(it.qty))}${kv("Tutar", money(lineTotal(it), c), "blue")}${it.size ? kv("Platform", esc(sizeLabel(it.size))) : ""}</div></td></tr>` : ""}`;
+      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Ana ürün fiyatı", money(basePrice(it), c))}${it.opts.map(o => kv("+ " + optName(o, brandOf(q)), money(num(o.price), c))).join("")}${kv("Birim fiyat", money(unitPrice(it), c), "blue")}${kv("Adet", esc(it.qty))}${kv("Tutar", money(lineTotal(it), c), "blue")}${it.size ? kv("Platform", esc(sizeLabel(it.size))) : ""}</div></td></tr>` : ""}`;
   }).join("");
   return `<section class="card" id="bottomCard"><div class="card-h"><h2 class="ttl">Proforma Kalemleri</h2><span class="muted small">${q.items.length} kalem</span>
      <div class="acts">${q.items.length ? outBtns("cur") : ""}<button class="btn blue" data-act="step" data-n="3"${q.items.length ? "" : " disabled"}>${ICON.eye} Önizle ve Oluştur</button></div></div>
@@ -576,22 +589,28 @@ function itemsCard() {
     : `<div class="empty">Henüz kalem yok. Yukarıda bir lift seçip <b>Proformaya Ekle</b> deyin.${isBlank(q) ? `<div><button class="btn" data-act="tpl-open">${ICON.eye} Örnek şablonu aç</button></div>` : ""}</div>`}</section>`;
 }
 function formReview() {
-  const q = S.q, st = sellerOf(q), mp = q.items.filter(missingPrice).length, iban = st["iban" + q.currency], ok = q.saved && !q.dirty;
+  const q = S.q, st = sellerOf(q), mp = q.items.filter(missingPrice).length, iban = st["iban" + q.currency], ok = q.saved && !q.dirty, lang = langOf(q);
   const chk = (cls, html) => `<span class="check ${cls}">${cls === "ok" ? ICON.check : ICON.alert}<span>${html}</span></span>`;
+  /* dil uyarıları: diğer dilde kalmış şartlar, Türkçesi olmayan firma metinleri ve ürün adları */
+  const foreign = TERM_KEYS.filter(k => termForeign(k, q[k], lang));
+  const noTrSeller = lang === "tr" && companyChosen(q) ? SELLER_TR.filter(k => str(st[k]).trim() && !str(st[k + "Tr"]).trim() && k !== "origin") : [];
+  const noTr = lang === "tr" ? noTrName(q) : 0;
   let main;
   if (ok) main = outBtns("cur");
   else main = `<button class="btn blue" data-act="create">${ICON.check} ${q.saved ? "Değişiklikleri Kaydet" : "Proformayı Oluştur"}</button>`;
+  const tl = t => lang === "tr" ? (TITLE_TR[t] || t) : t;
   return `<div class="card-h"><h2 class="ttl">Belge Bilgileri</h2></div>
    <div class="fgrid">
-    <div class="fld"><label for="r_title">Belge başlığı</label><select id="r_title" data-q="title">${TITLES.map(t => opt(t, q.title)).join("")}${TITLES.includes(q.title) ? "" : opt(q.title, q.title)}</select></div>
+    <div class="fld s2"><span class="lbl" id="langLbl">Proforma dili <em>başlıklar, şartlar ve ürün adları</em></span><div class="seg lang-seg" role="group" aria-labelledby="langLbl">${LANGS.map(l => `<button data-act="q-lang" data-v="${l.k}" aria-pressed="${lang === l.k}">${l.l}</button>`).join("")}</div></div>
+    <div class="fld"><label for="r_title">Belge başlığı</label><select id="r_title" data-q="title">${TITLES.map(t => opt(t, q.title, tl(t))).join("")}${TITLES.includes(q.title) ? "" : opt(q.title, q.title)}</select></div>
+    <div class="fld"><label for="r_cur">Para birimi</label><select id="r_cur" data-q="currency">${Object.keys(CUR).map(k => opt(k, q.currency, k + " (" + CUR[k] + ")")).join("")}</select></div>
     <div class="fld"><span class="lbl">Proforma no <em>sistem verir</em></span><div class="sysno">${q.no ? `${ICON.lock}<b class="num">${esc(q.no)}</b>` : `<span>Oluşturulunca verilir</span>`}</div></div>
     <div class="fld"><label for="r_date">Tarih</label><div class="ico-in">${ICON.cal}<input id="r_date" type="date" data-q="date" value="${esc(q.date)}"></div></div>
-    <div class="fld"><label for="r_cur">Para birimi</label><select id="r_cur" data-q="currency">${Object.keys(CUR).map(k => opt(k, q.currency, k + " (" + CUR[k] + ")")).join("")}</select></div>
     <div class="fld s2"><label for="r_pay">Ödeme şekli</label><input id="r_pay" data-q="payment" list="dlPay" value="${esc(q.payment)}"></div>
     <div class="fld"><label for="r_del">Teslim şekli</label><input id="r_del" data-q="delivery" list="dlDel" value="${esc(q.delivery)}"></div>
     <div class="fld"><label for="r_val">Geçerlilik süresi</label><input id="r_val" data-q="validity" list="dlVal" value="${esc(q.validity)}"></div>
-    <div class="fld s2"><label for="r_dt">Teslim süresi</label><input id="r_dt" data-q="dtime" list="dlDt" value="${esc(q.dtime)}"></div>
-    <div class="fld s2"><span class="lbl">&nbsp;</span><span class="hint" style="align-self:center">Şartları listeden seçebilir ya da serbestçe yazabilirsiniz.</span></div>
+    <div class="fld s2"><label for="r_dt">Sevkiyat süresi</label><input id="r_dt" data-q="dtime" list="dlDt" value="${esc(q.dtime)}"></div>
+    <p class="hint s4" style="margin:0">Şartları listeden seçebilir ya da serbestçe yazabilirsiniz. Listedeki şartlar dil değiştirilince kendiliğinden çevrilir; serbest yazılan metin olduğu gibi kalır.</p>
     ${hsField(q)}
    </div>
    <div class="checks">${companyChosen(q) ? chk("ok", "Firma: " + esc(st.company || coName(companyById(q.companyId)))) : chk("bad", `Firma seçilmedi · <button class="link" data-act="step" data-n="1">Seç</button>`)}
@@ -599,8 +618,11 @@ function formReview() {
      ${q.items.length ? chk("ok", q.items.length + " kalem") : chk("bad", `Kalem yok · <button class="link" data-act="step" data-n="2">Ekle</button>`)}
      ${mp ? chk("warn", mp + " kalemde fiyat eksik") : ""}
      ${hsList(q).length ? chk("ok", "HS: " + esc(hsText(q))) : chk("warn", `HS kodu girilmedi · proformada boş kalır`)}
-     ${!companyChosen(q) ? "" : iban ? chk("ok", q.currency + " IBAN tanımlı") : chk("warn", `Seçili firmada ${q.currency} IBAN tanımlı değil · ${isAdmin() ? `<a href="#firma">Ekle</a>` : "yöneticiye bildirin"}`)}</div>
-   ${dlist("dlPay", PAYMENTS)}${dlist("dlDel", DELIVERY)}${dlist("dlVal", VALIDITY)}${dlist("dlDt", DTIME)}
+     ${!companyChosen(q) ? "" : iban ? chk("ok", q.currency + " IBAN tanımlı") : chk("warn", `Seçili firmada ${q.currency} IBAN tanımlı değil · ${isAdmin() ? `<a href="#firma">Ekle</a>` : "yöneticiye bildirin"}`)}
+     ${foreign.length ? chk("warn", `${foreign.map(k => TERM_LABEL[k]).join(", ")} ${lang === "tr" ? "İngilizce" : "Türkçe"} yazılmış · <button class="link" data-act="q-lang" data-v="${lang}" data-fix="1">Çevir</button>`) : ""}
+     ${noTrSeller.length ? chk("warn", `Firmanın Türkçe ${noTrSeller.map(k => ({since: "logo altı yazısı", brandNote: "marka logosu altı yazısı", warranty: "garanti notu"})[k]).join(", ")} yok · İngilizcesi basılır${isAdmin() ? ` · <a href="#firma">Ekle</a>` : ""}`) : ""}
+     ${noTr ? chk("warn", `${noTr} kalemin Türkçe adı yok · İngilizce adıyla basılır${isAdmin() ? ` · <a href="#urunler">Ürünler</a>` : ""}`) : ""}</div>
+   ${dlist("dlPay", termList("payment", lang))}${dlist("dlDel", DELIVERY)}${dlist("dlVal", termList("validity", lang))}${dlist("dlDt", termList("dtime", lang))}
    <div class="card-f"><button class="btn ghost" data-act="step" data-n="2">${ICON.left} Ürünler</button><div class="grow sum" style="text-align:right">${ok ? "Kayıtlı" : q.saved ? "Kaydedilmemiş değişiklik var" : "Oluşturunca sistem numarası verilir ve cari kartın kayıtlarına eklenir"}</div><div class="btns">${main}</div></div>`;
 }
 /* HS kodları: birden çok kod; Enter, virgül ya da Ekle ile eklenir. Öneriler bu hesabın önceki proformalarından gelir. */
@@ -700,8 +722,8 @@ async function setStage(id, k) {
 /* ---------- KAYITLAR sayfası ---------- */
 function filteredQuotes(anyStage) {
   const s = S.qSearch.toLowerCase().trim();
-  return S.quotes.filter(x => (!s || [x.no, x.buyer, x.country, x.city, x.address, x.title].join(" ").toLowerCase().includes(s))
-    && (!S.qCari || x.customerId === S.qCari) && (!S.qCur || x.currency === S.qCur) && (!S.qFrom || String(x.date) >= S.qFrom) && (!S.qTo || String(x.date) <= S.qTo)
+  return S.quotes.filter(x => (!s || [x.no, x.buyer, x.country, x.city, x.address, x.title, brandOf(x)].join(" ").toLowerCase().includes(s))
+    && (!S.qCari || x.customerId === S.qCari) && (!S.qCur || x.currency === S.qCur) && (!S.qBrand || brandOf(x) === S.qBrand) && (!S.qFrom || String(x.date) >= S.qFrom) && (!S.qTo || String(x.date) <= S.qTo)
     && (anyStage || !S.qStage || (S.qStage === "expired" ? isExpired(x) : stageOf(x) === S.qStage)));
 }
 const byDateDesc = (a, b) => String(b.date).localeCompare(String(a.date)) || String(b.no).localeCompare(String(a.no), "tr", {numeric: true});
@@ -720,7 +742,7 @@ function stageStrip(base) {
 function quoteRow(x) {
   const open = S.openQ.has(x.id), items = x.items || [], cari = x.customerId && cariById(x.customerId), vu = validUntil(x);
   const log = stageLogOf(x).filter(e => e.at).map(e => `${esc(STAGE_BY[e.k].l)} <span class="muted">${fmtTs(e.at)}</span>`).join(" → ");
-  return `<tr class="row${S.qFlash === x.id ? " flash" : ""}"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")}<span class="m-only"> · ${fmtDate(x.date)}</span></span><span class="m-amt">${money(x.total, x.currency)}</span></td>
+  return `<tr class="row${S.qFlash === x.id ? " flash" : ""}"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no)}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")} · ${brandOf(x)} · ${langOf(x).toUpperCase()}<span class="m-only"> · ${fmtDate(x.date)}</span></span><span class="m-amt">${money(x.total, x.currency)}</span></td>
       <td><b>${esc(x.buyer || "—")}</b><span class="sub">${cari ? esc(cari.code) + " · " : ""}${esc([x.city, x.country].filter(Boolean).join(", ") || x.address || "")}</span><div class="stg-m">${stagePick(x)}${expiryTag(x)}</div></td>
       <td class="stg-cell">${stagePick(x)}<span class="sub">${x.stageAt ? `${esc(ago(x.stageAt))} güncellendi` : ""}${expiryTag(x)}</span></td>
       <td class="c k-col"><span class="tag blue">${items.length} kalem</span></td><td class="r strong k-col">${money(x.total, x.currency)}</td>
@@ -730,7 +752,7 @@ function quoteRow(x) {
         <button class="ibtn" data-act="out" data-k="pdf" data-src="${x.id}" title="PDF indir" aria-label="PDF indir">${ICON.file}</button>
         <button class="ibtn" data-act="out" data-k="xlsx" data-src="${x.id}" title="Excel indir" aria-label="Excel indir">${ICON.grid}</button>
         <button class="ibtn danger" data-act="q-del" data-id="${x.id}" title="Sil" aria-label="Proformayı sil">${ICON.trash}</button></div></td></tr>
-    ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it).code + " · " + itemInfo(it).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}
+    ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it, brandOf(x)).code + " · " + itemInfo(it, brandOf(x)).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Proforma dili", LANG_BY[langOf(x)])}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Sevkiyat", esc(x.dtime || "—"))}
       ${kv("Geçerlilik süresi", esc(x.validity || "—") + (vu ? ` <span class="muted">· ${fmtDate(vu)} tarihine kadar</span>` : ""))}${kv("HS kodları", esc(hsText(x) || "—"))}
       ${log ? `<div class="kv wide"><span>Aşama geçmişi</span><b>${log}</b></div>` : ""}</div></td></tr>` : ""}`;
 }
@@ -752,6 +774,7 @@ function pageQuotes() {
      <div class="fld s-wide"><label for="f_s">Ara</label><div class="ico-in">${ICON.search}<input id="f_s" data-f="qSearch" value="${esc(S.qSearch)}" placeholder="No, firma veya ülke" autocomplete="off"></div></div>
      <div class="fld"><label for="f_cari">Cari kart</label><select id="f_cari" data-f="qCari"><option value="">Tümü</option>${cariList().map(c => opt(c.id, S.qCari, c.code + " · " + c.name)).join("")}</select></div>
      <div class="fld"><label for="f_c">Para birimi</label><select id="f_c" data-f="qCur"><option value="">Tümü</option>${Object.keys(CUR).map(k => opt(k, S.qCur, k)).join("")}</select></div>
+     <div class="fld"><label for="f_b">Marka</label><select id="f_b" data-f="qBrand"><option value="">Tümü</option>${BRANDS.map(k => opt(k, S.qBrand, k)).join("")}</select></div>
      <div class="fld"><label for="f_from">Başlangıç</label><input id="f_from" type="date" data-f="qFrom" value="${esc(S.qFrom)}"></div>
      <div class="fld"><label for="f_to">Bitiş</label><input id="f_to" type="date" data-f="qTo" value="${esc(S.qTo)}"></div>
      <button class="btn amber" data-act="f-clear">${ICON.list} Tümünü Listele</button></div></section>
@@ -787,7 +810,7 @@ function pagePano() {
   for (let i = 5; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1), k = d.getFullYear() + "-" + z(d.getMonth() + 1), l = qs.filter(x => monthKey(x.date) === k); months.push({k, label: MONTHS[d.getMonth()].slice(0, 3), full: MONTHS[d.getMonth()] + " " + d.getFullYear(), n: l.length, by: sumByCur(l)}); }
   const cariAgg = cariList().map(c => { const l = S.quotes.filter(x => x.customerId === c.id); return {c, n: l.length, by: sumByCur(l)}; }).filter(a => a.n).sort((a, b) => b.n - a.n).slice(0, 5);
   const mAgg = {};
-  S.quotes.forEach(x => (x.items || []).forEach(it => { const inf = itemInfo(it); if (inf.type !== "LIFT") return; (mAgg[inf.code] = mAgg[inf.code] || {code: inf.code, name: inf.name, qty: 0}).qty += Number(it.qty) || 0; }));
+  S.quotes.forEach(x => (x.items || []).forEach(it => { const inf = itemInfo(it, brandOf(x)); if (inf.type !== "LIFT") return; (mAgg[inf.code] = mAgg[inf.code] || {code: inf.code, name: inf.name, qty: 0}).qty += Number(it.qty) || 0; }));
   const models = Object.values(mAgg).sort((a, b) => b.qty - a.qty).slice(0, 5), mMax = Math.max(1, ...models.map(m => m.qty));
   const recent = [...S.quotes].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 5);
   const kpi = (label, value, sub) => `<div class="kpi card"><span class="k-l">${label}</span><b class="k-v num">${value}</b><span class="k-s">${sub}</span></div>`;
@@ -932,34 +955,45 @@ function genPassword() {
 }
 
 /* ---------- ÜRÜNLER sayfası ---------- */
+/* Kütüphane NDL ve DLP olarak iki görünümdedir. Ortak ürünler iki markada aynı kod numarası ve ölçülerle görünür;
+   yalnızca bir markada satılan ürün kartında işaretlenir. */
+const libBrand = () => BRANDS.includes(S.lib.brand) ? S.lib.brand : "NDL";
 function pageLib() {
-  const L = S.lib, all = products(), s = L.search.toLowerCase().trim(), adm = isAdmin();
-  const list = all.filter(p => p.type === L.type && (!s || (p.code + " " + p.name).toLowerCase().includes(s)));
-  if (!L.edit || (L.edit.id && !all.some(p => p.id === L.edit.id))) { const sel = pById(L.sel) || list[0]; L.edit = sel ? editBuf(sel) : null; }
+  const L = S.lib, B = libBrand(), all = products(), mine = all.filter(p => inBrand(p, B)), s = L.search.toLocaleLowerCase("tr").trim(), adm = isAdmin();
+  const list = mine.filter(p => p.type === L.type && (!s || [bCode(p.code, B), bName(p.name, B), trNameOf(p)].join(" ").toLocaleLowerCase("tr").includes(s)));
+  if (!L.edit || (L.edit.id && !mine.some(p => p.id === L.edit.id))) { const sel = (pById(L.sel) && inBrand(pById(L.sel), B) && pById(L.sel).type === L.type ? pById(L.sel) : null) || list[0]; L.edit = sel ? editBuf(sel) : null; }
   if (!adm && L.edit && !L.edit.id) L.edit = null;
-  const e = L.edit, lift = L.type === "LIFT";
-  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="thumb">${p.img ? `<img src="${esc(thumbOf(p.img))}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(p.code)}</td><td>${esc(p.name)}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
-  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Ortak kütüphane · ${all.length} ürün</div><h1>Ürünler</h1><p class="lead">Proformada seçilen modeller, kapasiteler, platform ölçüleri, opsiyonlar ve yedek parçalar. Kütüphane tüm kullanıcılar için ortaktır ve ${adm ? "yalnızca siz (yönetici) değiştirebilirsiniz" : "yalnızca yönetici değiştirebilir"}. Fiyatlar burada tutulmaz, her proformada girilir.</p></div>
+  const e = L.edit, lift = L.type === "LIFT", only = p => Array.isArray(p.brands) && p.brands.length && p.brands.length < BRANDS.length;
+  const rows = list.map(p => `<tr class="row clk${e && e.id === p.id ? " on" : ""}" data-act="lib-sel" data-id="${p.id}"><td class="thumb">${p.img ? `<img src="${esc(thumbOf(p.img))}" alt="" loading="lazy">` : ""}</td><td class="code">${esc(bCode(p.code, B))}</td><td>${esc(bName(p.name, B))}${only(p) ? ` <span class="tag amber">Yalnızca ${B}</span>` : ""}${trNameOf(p) ? `<span class="sub">${esc(bName(trNameOf(p), B))}</span>` : ""}</td>${lift ? `<td class="num">${capRange(p)}</td><td class="num muted">${liftSizes(p).map(x => x.replace("x", "×")).join(", ") || "—"}</td>` : ""}</tr>`).join("");
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Ortak kütüphane · ${BRANDS.map(b => `${b} ${all.filter(p => inBrand(p, b)).length}`).join(" · ")} ürün</div><h1>Ürünler</h1><p class="lead">Proformada seçilen modeller, kapasiteler, platform ölçüleri, opsiyonlar ve yedek parçalar. NDL ve DLP aynı ürünleri aynı kod numarası ve ölçülerle kullanır; kodlar seçili markayla görünür (NDL 5010 ↔ DLP 5010). Kütüphane tüm kullanıcılar için ortaktır ve ${adm ? "yalnızca siz (yönetici) değiştirebilirsiniz" : "yalnızca yönetici değiştirebilir"}. Fiyatlar burada tutulmaz, her proformada girilir.</p></div>
      ${adm ? `<button class="btn blue" data-act="lib-add">${ICON.plus} Yeni Ürün</button>` : `<span class="tag grey">${ICON.lock} Salt okunur</span>`}</div>
-   <div class="lib"><section class="card"><div class="lib-tools"><div class="seg" role="group" aria-label="Ürün türü">${Object.entries(TYPES).map(([k, v]) => `<button data-act="lib-type" data-t="${k}" aria-pressed="${L.type === k}">${v} <span class="muted">${all.filter(p => p.type === k).length}</span></button>`).join("")}</div>
-       <div class="ico-in">${ICON.search}<input id="libSearch" data-f="lib.search" value="${esc(L.search)}" placeholder="Kod veya ad ara" autocomplete="off"></div></div>
-     ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="thumb"><span class="sr-only">Fotoğraf</span></th><th>Kod</th><th>Ürün adı</th>${lift ? "<th>Kapasite</th><th>Platform ölçüleri</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu grupta ürün yok.</div>`}</section>
+   <div class="lib"><section class="card"><div class="lib-brand"><div class="seg brand-seg" role="group" aria-label="Marka">${BRANDS.map(b => `<button data-act="lib-brand" data-v="${b}" aria-pressed="${B === b}"><img src="${BRAND_IMG[b]}" alt="">${b} <span class="muted">${all.filter(p => inBrand(p, b)).length}</span></button>`).join("")}</div></div>
+     <div class="lib-tools"><div class="seg" role="group" aria-label="Ürün türü">${Object.entries(TYPES).map(([k, v]) => `<button data-act="lib-type" data-t="${k}" aria-pressed="${L.type === k}">${v} <span class="muted">${mine.filter(p => p.type === k).length}</span></button>`).join("")}</div>
+       <div class="ico-in">${ICON.search}<input id="libSearch" data-f="lib.search" value="${esc(L.search)}" placeholder="Kod veya ad ara (Türkçe ad dahil)" autocomplete="off"></div></div>
+     ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th class="thumb"><span class="sr-only">Fotoğraf</span></th><th>Kod</th><th>Ürün adı</th>${lift ? "<th>Kapasite</th><th>Platform ölçüleri</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">${s ? "Aramayla eşleşen ürün yok." : `${B} kütüphanesinde bu grupta ürün yok.`}</div>`}</section>
     <section class="card editor">${e ? (adm ? libEditor(e) : libView(e)) : `<div class="empty">Soldan bir ürün seçin.</div>`}</section></div></div>`;
 }
-function editBuf(p) { return {id: p.id, code: p.code, name: p.name, type: p.type, order: p.order, img: p.img || "", caps: (p.caps || []).join(", "), sizes: liftSizes(p).join(", ")}; }
+/* düzenleme kopyası seçili markanın koduyla gösterilir; kaydedilirken marka önekine göre saklanır */
+function editBuf(p) {
+  const B = libBrand();
+  return {id: p.id, code: bCode(p.code, B), name: bName(p.name, B), nameTr: bName(p.nameTr != null ? str(p.nameTr) : trNameOf(p), B), type: p.type, order: p.order, img: p.img || "",
+    brands: Array.isArray(p.brands) && p.brands.length ? p.brands.filter(b => BRANDS.includes(b)) : [...BRANDS], caps: (p.caps || []).join(", "), sizes: liftSizes(p).join(", ")};
+}
 const usedIn = id => S.quotes.filter(x => (x.items || []).some(it => it.pid === id)).length;
+const brandsText = bs => (!bs || bs.length >= BRANDS.length) ? "NDL ve DLP" : "Yalnızca " + bs.join(", ");
 function photoBox(img, alt) { return `<figure class="pphoto">${img ? `<img src="${esc(img)}" alt="${esc(alt || "")}">` : `<div class="ph-empty">${ICON.cube}<span>Fotoğraf yok</span></div>`}</figure>`; }
 function libView(e) {
-  const p = pById(e.id) || e, sz = liftSizes(p);
+  const p = pById(e.id) || e, sz = liftSizes(p), B = libBrand();
   return `<div class="card-h"><h2 class="ttl">Ürün Kartı</h2><span class="tag grey">${esc(TYPES[p.type] || p.type)}</span></div>
-   ${photoBox(p.img, p.code)}
-   <div class="model-card" style="margin:16px 0"><b>${esc(p.code)}</b><span>${esc(p.name)}</span>${p.type === "LIFT" ? `<small>${capRange(p)}${sz.length ? " · katalog: " + sz.map(x => x.replace("x", "×")).join(", ") : ""}</small>` : ""}</div>
-   ${p.type === "LIFT" ? `<p class="muted small" style="margin:0">${usedIn(p.id)} proformanızda kullanıldı.</p>` : ""}
+   ${photoBox(p.img, bCode(p.code, B))}
+   <div class="model-card" style="margin:16px 0"><b>${esc(bCode(p.code, B))}</b><span>${esc(bName(p.name, B))}</span>${p.type === "LIFT" ? `<small>${capRange(p)}${sz.length ? " · katalog: " + sz.map(x => x.replace("x", "×")).join(", ") : ""}</small>` : ""}</div>
+   <div class="kvs">${kv("Türkçe adı", esc(bName(trNameOf(p), B)) || `<span class="muted">Yok · İngilizce adı basılır</span>`)}${kv("Marka", esc(brandsText(e.brands)))}</div>
+   ${p.type === "LIFT" ? `<p class="muted small" style="margin:12px 0 0">${usedIn(p.id)} proformanızda kullanıldı.</p>` : ""}
    <p class="hint" style="margin:12px 0 0">${ICON.lock} Bu kütüphane ortaktır; ürünleri yalnızca yönetici ekleyip değiştirebilir.</p>`;
 }
 function libEditor(e) {
   const f = (id, k, label, attrs = "") => `<div class="fld s4"><label for="${id}">${label}</label><input id="${id}" data-le="${k}" value="${esc(e[k])}"${attrs}></div>`;
-  const def = catalogImg(e);
+  const def = catalogImg(e), B = libBrand(), bs = e.brands || BRANDS;
   return `<div class="card-h"><h2 class="ttl">${e.id ? "Ürün Kartı" : "Yeni Ürün"}</h2>${e.id ? `<span class="tag grey">${esc(TYPES[e.type] || e.type)}</span>` : ""}</div>
    <div class="pphoto-ed">${photoBox(e.img, e.code)}
      <div class="btns"><button class="btn sm" data-act="lib-img-up">${ICON.plus} ${e.img ? "Fotoğrafı değiştir" : "Fotoğraf yükle"}</button>${e.img ? `<button class="btn ghost sm" data-act="lib-img-clear">${ICON.x} Kaldır</button>` : ""}${def && def !== e.img ? `<button class="btn ghost sm" data-act="lib-img-def">Katalog fotoğrafı</button>` : ""}
@@ -967,9 +1001,11 @@ function libEditor(e) {
      <p class="hint" style="margin:0">Fotoğraf 640 piksele küçültülür; değişiklik “Kaydet” ile tüm kullanıcılara yansır.</p></div>
    ${e.type === "LIFT" && e.code && e.id ? `<div class="model-card" style="margin:0 0 18px"><b>${esc(e.code)}</b><span>${esc(e.name)}</span><small>${usedIn(e.id)} proformanızda kullanıldı</small></div>` : ""}
    <div class="fgrid">
-    <div class="fld s2"><label for="le_code">Kod</label><input id="le_code" data-le="code" value="${esc(e.code)}" placeholder="Örn. NDL 5010"></div>
+    <div class="fld s2"><label for="le_code">Kod</label><input id="le_code" data-le="code" value="${esc(e.code)}" placeholder="Örn. ${B} 5010"></div>
     <div class="fld s2"><label for="le_type">Tür</label><select id="le_type" data-le="type">${Object.entries(TYPES).map(([k, v]) => opt(k, e.type, v)).join("")}</select></div>
-    ${f("le_name", "name", "Ürün adı <em>proformada böyle basılır</em>", ' placeholder="CANTILEVER LIFT"')}
+    <div class="fld s4"><span class="lbl" id="leBrandLbl">Marka <em>${bs.length >= BRANDS.length ? "iki markada aynı kod numarası ve ölçülerle görünür" : "yalnızca bu markanın kütüphanesinde görünür"}</em></span><div class="seg" role="group" aria-labelledby="leBrandLbl">${BRANDS.map(b => `<button data-act="le-brand" data-v="${b}" aria-pressed="${bs.includes(b)}"><img src="${BRAND_IMG[b]}" alt="">${b}</button>`).join("")}</div></div>
+    ${f("le_name", "name", "Ürün adı <em>İngilizce proformada böyle basılır</em>", ' placeholder="CANTILEVER LIFT"')}
+    ${f("le_nameTr", "nameTr", "Türkçe ürün adı <em>Türkçe proformada; boşsa İngilizce adı basılır</em>", ' placeholder="KANTİLEVER LİFT"')}
     ${e.type === "LIFT" ? f("le_caps", "caps", "Kapasiteler <em>kg, virgülle</em>", ' placeholder="2000, 2500" inputmode="numeric"') + f("le_sizes", "sizes", "Platform ölçüleri <em>mm, virgülle</em>", ' placeholder="2400x1800, 2500x1800"') : ""}
    </div>
    ${e.type === "LIFT" ? `<p class="hint" style="margin:12px 0 0">Ölçüler yapılandırıcıda “Katalog ölçüleri” olarak öne çıkar; standart ölçüler ve özel boyut her zaman seçilebilir.</p>` : ""}
@@ -977,8 +1013,8 @@ function libEditor(e) {
 }
 
 /* ---------- FİRMALAR sayfası (ortak; yalnızca yönetici değiştirir) ---------- */
-const CO_LABELS = {company: "Firma unvanı", contact: "Telefon ve e-posta satırı", address: "Adres", since: "Logo altı yazı", brandNote: "NDL logosu altı yazı",
-  warranty: "Garanti notu", origin: "Menşe", hs: "GTİP (HS code)", prefix: "Numara öneki", beneficiary: "Lehtar (beneficiary)", bank: "Banka", branch: "Şube",
+const CO_LABELS = {company: "Firma unvanı", contact: "Telefon ve e-posta satırı", address: "Adres", since: "Logo altı yazı", brandNote: "Marka logosu altı yazı",
+  warranty: "Garanti notu", origin: "Menşe", sinceTr: "Logo altı yazı · Türkçe", brandNoteTr: "Marka logosu altı yazı · Türkçe", warrantyTr: "Garanti notu · Türkçe", originTr: "Menşe · Türkçe", hs: "GTİP (HS code)", prefix: "Numara öneki", beneficiary: "Lehtar (beneficiary)", bank: "Banka", branch: "Şube",
   ibanUSD: "USD IBAN", ibanEUR: "EUR IBAN", ibanTRY: "TRY IBAN", swift: "SWIFT"};
 function coBuf(c) { const e = {id: "", name: "", logo: "", order: 0}; COMPANY_FIELDS.forEach(k => { e[k] = ""; }); return Object.assign(e, c ? JSON.parse(JSON.stringify(c)) : {prefix: "PI"}); }
 function pageFirm() {
@@ -996,7 +1032,7 @@ function coView(e) {
   const row = k => e[k] ? kv(CO_LABELS[k], esc(e[k])) : "";
   return `<div class="card-h"><h2 class="ttl">${esc(coName(e))}</h2></div>
    <div class="co-sum" style="margin-bottom:16px">${coLogo(e)}<div><b>${esc(e.company)}</b><span>${esc([e.address, e.contact].filter(Boolean).join(" · "))}</span></div></div>
-   <div class="kvs">${["since", "brandNote", "warranty", "origin", "prefix", "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift"].map(row).join("")}</div>
+   <div class="kvs">${["since", "sinceTr", "brandNote", "brandNoteTr", "warranty", "warrantyTr", "origin", "originTr", "prefix", "beneficiary", "bank", "branch", "ibanUSD", "ibanEUR", "ibanTRY", "swift"].map(row).join("")}</div>
    <p class="hint" style="margin:14px 0 0">${ICON.lock} Firma bilgilerini yalnızca yönetici değiştirebilir.</p>`;
 }
 function coEditor(e) {
@@ -1008,9 +1044,12 @@ function coEditor(e) {
    </div>
    <div class="card-h" style="margin-top:22px"><h2 class="ttl">Proforma Başlığı</h2></div><div class="fgrid">
      ${f("company", "s2", ' placeholder="Firma unvanı" autocomplete="organization"')}${f("contact", "s2", ' placeholder="Tel: … Email: …"')}${f("address", "s4")}
-     ${f("since", "s2", ' placeholder="Örn. Since 1982..."', "logonun altında, küçük")}${f("brandNote", "s2", ' placeholder="Örn. The brand of Düelsan"', "sağ üstte")}</div>
+     ${f("since", "s2", ' placeholder="Örn. Since 1982..."', "İngilizce · logonun altında")}${f("sinceTr", "s2", ' placeholder="Örn. 1982\'den beri..."', "boşsa İngilizcesi basılır")}
+     ${f("brandNote", "s2", ' placeholder="Örn. The brand of Düelsan"', "İngilizce · sağ üstte")}${f("brandNoteTr", "s2", ' placeholder="Örn. Bir Düelsan markasıdır"', "boşsa İngilizcesi basılır")}</div>
+   <p class="hint" style="margin:8px 0 0">Proforma İngilizce ya da Türkçe basılabilir. Türkçe alan boş bırakılırsa Türkçe proformada İngilizce metin kullanılır.</p>
    <div class="card-h" style="margin-top:22px"><h2 class="ttl">Proforma</h2></div><div class="fgrid">
-     ${f("warranty", "s4", ' placeholder="Örn. ürünlerin garanti açıklaması"', "kırmızı, ortalı basılır")}${f("origin", "s2", ' placeholder="Örn. TÜRKİYE"')}${f("prefix", "s2", ' placeholder="PI" maxlength="8" style="text-transform:uppercase"', "ör. DU → DU2026/0012")}</div>
+     ${f("warranty", "s4", ' placeholder="Örn. ürünlerin garanti açıklaması"', "İngilizce · kırmızı, ortalı basılır")}${f("warrantyTr", "s4", ' placeholder="Garanti açıklamasının Türkçesi"', "boşsa İngilizcesi basılır")}
+     ${f("origin", "", ' placeholder="Örn. TÜRKİYE"', "İngilizce")}${f("originTr", "", ' placeholder="Örn. TÜRKİYE"')}${f("prefix", "s2", ' placeholder="PI" maxlength="8" style="text-transform:uppercase"', "ör. DU → DU2026/0012")}</div>
    <p class="hint" style="margin:8px 0 0">Sıra numarası tüm firmalarda ortaktır; önek yalnızca numaranın başını belirler.</p>
    <div class="card-h" style="margin-top:22px"><h2 class="ttl">Banka Bilgileri</h2></div><div class="fgrid">
      ${f("beneficiary", "s2")}${f("bank")}${f("branch")}${f("ibanUSD", "s2", ' spellcheck="false"')}${f("ibanEUR", "s2", ' spellcheck="false"')}${f("ibanTRY", "s2", ' spellcheck="false"')}${f("swift", "", ' spellcheck="false"')}</div>
@@ -1055,7 +1094,8 @@ function duplicate(src) {
 }
 function quoteDoc(q) {
   const d = JSON.parse(JSON.stringify(q)); ["saved", "dirty", "sample", "autoNo", "id"].forEach(k => delete d[k]);
-  d.items = d.items.map(it => { const p = pById(it.pid); if (p) it.snap = {code: p.code, name: p.name, type: p.type}; it.opts = (it.opts || []).map(o => ({oid: o.oid, name: optName(o), price: o.price})); return it; });
+  d.items = d.items.map(it => { const p = pById(it.pid); if (p) it.snap = prodSnap(p);
+    it.opts = (it.opts || []).map(o => { const op = pById(o.oid), t = op ? trNameOf(op) : (o.nameTr != null ? str(o.nameTr) : ""); return Object.assign({oid: o.oid, name: optName(o), price: o.price}, t ? {nameTr: t} : {}); }); return it; });
   d.total = qTotal(q); d.updatedAt = Date.now(); d.createdAt = q.createdAt || Date.now(); d.status = "created";
   if (!STAGE_BY[d.stage]) { d.stage = "prepared"; d.stageAt = d.createdAt; d.stageLog = [{k: "prepared", at: d.createdAt}]; }
   return d;
@@ -1093,12 +1133,12 @@ async function makeFile(kind, src, btn) {
     let blob;
     if (kind === "pdf") {
       if (!window.pdfMake) throw new Error("PDF modülü yüklenemedi; sayfayı yenileyin");
-      if (!LOGO_N) await loadLogos();
+      if (!LOGO_B[brandOf(q)]) await loadLogos();
       const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar; await loadPhotos(q);
       blob = await new Promise((res, rej) => { try { pdfMake.createPdf(pdfDoc(q)).getBlob(res); } catch (e) { rej(e); } });
     } else {
       if (!window.ExcelJS) { toast("Excel hazırlanıyor…"); await loadScript(XLSX_SRC); }
-      if (!LOGO_N) await loadLogos();
+      if (!LOGO_B[brandOf(q)]) await loadLogos();
       const lg = await logoData(logoSrc(q)); LOGO_S = lg.d; LOGO_S_AR = lg.ar; await loadPhotos(q);
       const wb = await buildXlsx(window.ExcelJS, q);
       blob = new Blob([await wb.xlsx.writeBuffer()], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
@@ -1112,9 +1152,14 @@ async function saveProduct(btn) {
   const e = S.lib.edit; if (!e) return;
   if (!isAdmin()) { toastErr("Ürün kütüphanesini yalnızca yönetici değiştirebilir"); return; }
   if (!String(e.code).trim() || !String(e.name).trim()) { toastErr("Kod ve ürün adı boş olamaz"); return; }
+  const bs = (e.brands || BRANDS).filter(b => BRANDS.includes(b));
+  if (!bs.length) { toastErr("Ürünün satıldığı en az bir markayı seçin"); return; }
+  /* iki markada da olan ürün NDL önekiyle saklanır; DLP görünümünde DLP koduyla gösterilir */
+  const canon = bs.includes("NDL") ? "NDL" : bs[0];
   const id = e.id || ("p-" + rid()), order = e.order || Math.max(0, ...products().map(p => p.order || 0)) + 1;
-  const d = {code: String(e.code).trim(), name: String(e.name).trim(), type: e.type, order,
+  const d = {code: bCode(String(e.code).trim(), canon), name: bName(String(e.name).trim(), canon), nameTr: bName(String(e.nameTr || "").trim(), canon), type: e.type, order,
     caps: String(e.caps || "").split(/[,;\s]+/).map(Number).filter(n => n > 0)};
+  if (bs.length < BRANDS.length) d.brands = bs;
   if (e.type === "LIFT") d.sizes = String(e.sizes || "").split(/[,;\s]+/).map(s => parseSize(s.replace("×", "x"))).filter(Boolean).map(m => m[0] + "x" + m[1]);
   d.img = e.img || "";
   busy(btn, true);
@@ -1122,7 +1167,8 @@ async function saveProduct(btn) {
     await Store.putShared("product", id, d);
     if (!S.products.length) S.products = CATALOG.map(p => ({...p}));
     upsertLocal(S.products, Object.assign({id}, d)); S.products.sort((a, b) => (a.order || 0) - (b.order || 0));
-    S.lib.sel = id; S.lib.type = d.type; S.lib.edit = null; toast("Ürün kaydedildi"); renderMain();
+    S.lib.sel = id; S.lib.type = d.type; S.lib.edit = null; if (!bs.includes(libBrand())) S.lib.brand = bs[0];
+    toast("Ürün kaydedildi · " + brandsText(d.brands)); renderMain();
   } catch (err) { toastErr("Kaydedilemedi: " + authError(err)); busy(btn, false); }
 }
 async function saveCari(btn) {
@@ -1170,7 +1216,10 @@ document.addEventListener("input", e => {
   if (d.q) {
     S.q[d.q] = t.value; touch();
     if (d.q === "currency") { if (!CUR[S.q.currency]) S.q.currency = "USD"; renderMain(); return; }
-    refreshIntro(); refreshPaper(); return;
+    refreshIntro(); refreshPaper();
+    /* şart yazılırken dil uyarısı güncellenir (ör. Türkçe proformada "15 DAYS") */
+    if (TERM_KEYS.includes(d.q)) { const ck = document.querySelector("#formCard .checks"), tmp = document.createElement("div"); tmp.innerHTML = formReview(); const n = tmp.querySelector(".checks"); if (ck && n && ck.innerHTML !== n.innerHTML) ck.innerHTML = n.innerHTML; }
+    return;
   }
   if (d.c && t.tagName !== "SELECT") {
     S.cfg[d.c] = t.value;
@@ -1286,7 +1335,7 @@ document.addEventListener("click", async e => {
     case "cfg-add": {
       const miss = cfgMissing(c);
       if (miss.length) { S.cfgTried = true; renderMain(); const n = document.querySelector("#formCard .need"); if (n) n.scrollIntoView({block: "center", behavior: scrollMode()}); toastErr("Eksik: " + miss.join(", ")); break; }
-      const it = cfgItem(c), code = itemInfo(it).code; let idx;
+      const it = cfgItem(c), code = itemInfo(it, brandOf(q)).code; let idx;
       if (c.edit != null && q.items[c.edit]) { idx = c.edit; q.items[idx] = it; toast(`${idx + 1}. kalem güncellendi`); }
       else { q.items.push(it); idx = q.items.length - 1; toast(`${code} proformaya eklendi · ${idx + 1}. kalem`); }
       S.flash = idx; S.cfg = newCfg(c.mode); S.cfgTried = false; touch(); renderMain();
@@ -1297,18 +1346,29 @@ document.addEventListener("click", async e => {
     case "li-up": if (i > 0) { [q.items[i - 1], q.items[i]] = [q.items[i], q.items[i - 1]]; if (c.edit === i) c.edit = i - 1; else if (c.edit === i - 1) c.edit = i; S.flash = i - 1; S.openRows.clear(); touch(); renderMain(); } break;
     case "li-down": if (i < q.items.length - 1) { [q.items[i + 1], q.items[i]] = [q.items[i], q.items[i + 1]]; if (c.edit === i) c.edit = i + 1; else if (c.edit === i + 1) c.edit = i; S.flash = i + 1; S.openRows.clear(); touch(); renderMain(); } break;
     case "li-del": { const [gone] = q.items.splice(i, 1); if (c.edit === i) S.cfg = newCfg(c.mode); else if (c.edit > i) c.edit--; S.openRows.clear(); touch(); renderMain();
-      toast(`${itemInfo(gone).code} silindi`, () => { S.q.items.splice(Math.min(i, S.q.items.length), 0, gone); touch(); renderMain(); }); break; }
+      toast(`${itemInfo(gone, brandOf(S.q)).code} silindi`, () => { S.q.items.splice(Math.min(i, S.q.items.length), 0, gone); touch(); renderMain(); }); break; }
     /* belge */
     case "create": createProforma(b); break;
     case "out": makeFile(b.dataset.k, b.dataset.src, b); break;
     /* kayıtlar */
     case "q-stage": S.qStage = S.qStage === b.dataset.k ? "" : b.dataset.k; renderMain(); break;
     case "q-view": S.qView = b.dataset.v === "list" ? "list" : "group"; lsSet("ndl-qview", S.qView); renderMain(); break;
+    case "q-brand": { const v = b.dataset.v; if (!BRANDS.includes(v) || v === brandOf(q)) break;
+      const off = q.items.filter(it => { const p = pById(it.pid); return p && !inBrand(p, v); });
+      if (off.length) { toastErr(`${off.length} kalem ${v} kütüphanesinde yok; marka değiştirmek için önce bu kalemleri kaldırın`); break; }
+      q.brand = v; BRAND_DEF = v; lsSet("ndl-brand", v);
+      if (c.pid && !inBrand(pById(c.pid), v)) { S.cfg = newCfg(c.mode); S.cfgTried = false; }
+      touch(); keepFocus(b, renderMain); announce(`Marka ${v} · ürün kodları ${v} ile basılır`); break; }
+    case "q-lang": { const v = b.dataset.v === "tr" ? "tr" : "en", fix = !!b.dataset.fix; if (!fix && v === langOf(q)) break;
+      const kept = setLang(q, v).filter(k => q[k]); touch();
+      if (fix) { renderMain(); focusHeading("#formCard h2"); } else keepFocus(b, renderMain);
+      if (kept.length) toast(`Proforma ${LANG_BY[v]} · serbest yazılan ${kept.map(k => TERM_LABEL[k].toLocaleLowerCase("tr")).join(", ")} çevrilmedi, kontrol edin`);
+      else announce(`Proforma dili ${LANG_BY[v]} · şartlar çevrildi`); break; }
     case "q-grp": { const k = b.dataset.k; if (S.qColl.has(k)) S.qColl.delete(k); else S.qColl.add(k); renderMain(); break; }
     case "hs-add": addHs(($("r_hs") || {}).value); break;
     case "hs-sug": addHs(b.dataset.v); break;
     case "hs-del": { const l = hsList(q).slice(); l.splice(+b.dataset.i, 1); q.hsCodes = l; touch(); renderMain(); break; }
-    case "f-clear": S.qStage = ""; S.qSearch = ""; S.qCari = ""; S.qCur = ""; S.qFrom = ""; S.qTo = ""; if ($("gSearch")) $("gSearch").value = ""; renderMain(); break;
+    case "f-clear": S.qStage = ""; S.qSearch = ""; S.qCari = ""; S.qCur = ""; S.qBrand = ""; S.qFrom = ""; S.qTo = ""; if ($("gSearch")) $("gSearch").value = ""; renderMain(); break;
     case "q-open": { const id = b.dataset.id; if (S.openQ.has(id)) S.openQ.delete(id); else S.openQ.add(id); renderMain(); break; }
     case "dup": { const src = b.dataset.id === "cur" ? S.q : S.quotes.find(x => x.id === b.dataset.id); if (!src) break;
       const run = () => { const n = duplicate(src); S.q = n; S.cfg = newCfg(); S.step = 3; S.openRows.clear(); saveDraft(); updateCart(); go("proforma"); renderMain(); toast("Kopya hazır · yeni no " + n.no); };
@@ -1361,11 +1421,15 @@ document.addEventListener("click", async e => {
       ask({title: "Hesap kalıcı olarak silinsin mi?", msg: `<b>${esc(u.email)}</b> hesabı ve bu hesaba ait <b>${esc(u.doc_count ?? 0)}</b> kayıt (proformalar, cari kartlar, ürünler, ayarlar) kalıcı olarak silinir. Bu işlem geri alınamaz.`, yes: "Kalıcı olarak sil", danger: true, fn: () => adminAction("admin_delete_user", {target: u.id}, u.email + " silindi")}); break; }
     /* ürünler */
     case "lib-type": S.lib.type = b.dataset.t; S.lib.sel = null; S.lib.edit = null; renderMain(); break;
+    case "lib-brand": { const v = b.dataset.v; if (!BRANDS.includes(v) || v === libBrand()) break; S.lib.brand = v; lsSet("ndl-libbrand", v); S.lib.edit = null; keepFocus(b, renderMain); break; }
+    case "le-brand": { const e = S.lib.edit, v = b.dataset.v; if (!e || !BRANDS.includes(v)) break; const bs = new Set(e.brands || BRANDS);
+      if (bs.has(v)) { if (bs.size === 1) { toast("Ürün en az bir markada satılmalı"); break; } bs.delete(v); } else bs.add(v);
+      e.brands = BRANDS.filter(x => bs.has(x)); keepFocus(b, renderMain); break; }
     case "lib-sel": S.lib.sel = b.dataset.id; S.lib.edit = editBuf(pById(b.dataset.id)); renderMain(); if (window.innerWidth < 1100) { const ed = document.querySelector(".editor"); if (ed) ed.scrollIntoView({block: "start", behavior: scrollMode()}); } break;
     case "lib-img-up": { const i = $("libImg"); if (i) i.click(); break; }
     case "lib-img-clear": if (S.lib.edit) { S.lib.edit.img = ""; renderMain(); } break;
     case "lib-img-def": if (S.lib.edit) { S.lib.edit.img = catalogImg(S.lib.edit); renderMain(); } break;
-    case "lib-add": if (!isAdmin()) break; S.lib.edit = {id: "", code: "", name: "", type: S.lib.type, caps: "", sizes: ""}; renderMain(); setTimeout(() => { const n = $("le_code"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
+    case "lib-add": if (!isAdmin()) break; S.lib.edit = {id: "", code: "", name: "", nameTr: "", brands: [...BRANDS], type: S.lib.type, caps: "", sizes: ""}; renderMain(); setTimeout(() => { const n = $("le_code"); if (n) { n.focus(); n.scrollIntoView({block: "center"}); } }, 0); break;
     case "lib-cancel": S.lib.edit = null; renderMain(); break;
     case "lib-save": saveProduct(b); break;
     case "lib-del": { const p = pById(b.dataset.id); if (!p) break;
