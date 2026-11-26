@@ -125,7 +125,8 @@ const S = {
   products: [], companies: [], settings: {}, quotes: [], customers: [],
   q: null, cfg: null, cfgTried: false, flash: null,
   openRows: new Set(), openQ: new Set(),
-  qSearch: "", qCur: "", qBrand: "", qFrom: "", qTo: "", qStage: "", qView: "group", qColl: new Set(),
+  qSearch: "", qCur: "", qBrand: "", qLang: "", qProd: "", qMin: "", qMax: "", qSort: "date-desc", qAdv: false, qFrom: "", qTo: "", qStage: "", qView: "group", qColl: new Set(),
+  gs: {q: "", open: false, act: -1, opts: [], mobile: false},
   lib: {type: "LIFT", brand: "NDL", sel: null, search: "", edit: null}, co: {sel: null, edit: null},
   firm: null, menu: null, confirm: null, undo: null, busy: false
 };
