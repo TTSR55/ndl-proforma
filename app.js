@@ -218,7 +218,7 @@ function renderGate(prof) {
     <div class="row-between" style="width:100%;margin-top:6px">${susp ? "<span></span>" : `<button class="btn blue" data-act="gate-check">${ICON.check} Tekrar kontrol et</button>`}<button class="btn" data-act="logout">${ICON.out} Çıkış yap</button></div></div></div></div>`;
 }
 function leave() {
-  usageStop(true); S.me = null; S.acct = null;
+  closeViewer(false); usageStop(true); S.me = null; S.acct = null;
   /* önceki hesabın "Geri al" bildirimi bir sonraki girişte kalmasın */
   clearTimeout(toast._t); S.undo = null; const tt = $("toast"); if (tt) { tt.hidden = true; tt.innerHTML = ""; }
   Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], companies: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
@@ -429,7 +429,7 @@ function draftPop() {
     ${d.items.length ? `<ul class="dp-items">${d.items.slice(0, 4).map(li).join("")}</ul>${d.items.length > 4 ? `<p class="dp-more">+${d.items.length - 4} kalem daha</p>` : ""}` : `<p class="dp-none">Henüz kalem eklenmedi.</p>`}
     ${miss ? `<p class="dp-warn">${ICON.alert} ${miss} kalemde fiyat eksik</p>` : ""}
     <div class="dp-f"><div class="dp-tot"><span>Toplam · ${d.items.length} kalem</span><b>${money(qTotal(d), d.currency)}</b></div>
-      <div class="dp-fb"><button class="btn" data-act="draft-go" data-n="3">${ICON.eye} Önizle</button><button class="btn blue" data-act="draft-go" data-n="${S.step}">Devam et ${ICON.right}</button></div></div></div>`;
+      <div class="dp-fb"><button class="btn" data-act="draft-prev" aria-haspopup="dialog">${ICON.eye} Önizle</button><button class="btn blue" data-act="draft-cont">Devam et ${ICON.right}</button></div></div></div>`;
 }
 function updateCart() {
   const b = document.querySelector(".cart"); if (!b) return;
@@ -437,6 +437,50 @@ function updateCart() {
   b.innerHTML = cartInner(); b.setAttribute("aria-label", cartLabel());
   const c = $("cartCount"); if (c && Number(c.textContent) > was) c.classList.add("bump");
   if (S.menu === "draft") { const p = $("draftPop"); if (p) p.outerHTML = draftPop(); }
+}
+/* önizleme penceresi: taslağın A4 sayfası, PDF'teki görünümüyle (önizleme, PDF ve Excel aynı sayfayı kullanır) */
+const vwRO = new ResizeObserver(() => fitViewer());
+function openPreview() {
+  const d = draftOf(); if (!d) return;
+  const c = $("confirm"), app = document.querySelector(".app");
+  S.viewer = {zoom: false};
+  const note = d.sample ? "Örnek şablon önizlemesi; bilgiler hayalidir." : d.saved ? "Kaydedilmemiş değişikliklerle önizleme. PDF ve Excel, değişiklikler kaydedilince güncellenir."
+    : "Taslak önizlemesi. Proforma numarası ile PDF ve Excel dosyaları, proforma oluşturulunca hazır olur.";
+  c.innerHTML = `<div class="viewer" role="dialog" aria-modal="true" aria-labelledby="vwT" aria-describedby="vwN" tabindex="-1">
+    <div class="vw-h"><div><h2 id="vwT">Önizleme</h2><span class="muted small">${esc(d.no || "Taslak")} · ${esc(d.buyer || "Cari seçilmedi")} · ${brandOf(d)} · ${LANG_BY[langOf(d)]}</span></div>
+      <div class="vw-acts"><button class="btn sm vw-zoom" data-act="vw-zoom" aria-pressed="false" aria-label="Yakınlaştır" hidden>${ICON.search}<span class="lbl">Yakınlaştır</span></button><button class="btn blue sm" data-act="vw-cont">Devam et ${ICON.right}</button><button class="ibtn" data-act="vw-close" aria-label="Önizlemeyi kapat">${ICON.x}</button></div></div>
+    <div class="vw-body" id="vwBody"><div class="vw-frame" id="vwFrame"><div class="vw-scale" id="vwScale"><div class="paper" id="vwPaper">${paperHtml(d, false)}</div></div></div></div>
+    <p class="vw-f" id="vwN">${ICON.file} ${esc(note)}</p></div>`;
+  c.classList.add("vw-open"); c.hidden = false; if (app) app.inert = true;
+  vwRO.observe($("vwPaper")); fitViewer(); requestAnimationFrame(fitViewer);
+  const v = c.querySelector(".viewer"); if (v) v.focus();
+}
+function fitViewer() {
+  const body = $("vwBody"), fr = $("vwFrame"), sc = $("vwScale"), p = $("vwPaper"); if (!body || !fr || !S.viewer) return;
+  const pad = parseFloat(getComputedStyle(body).paddingLeft) || 0, avail = body.clientWidth - pad * 2, small = avail < 794;
+  const k = S.viewer.zoom ? 1 : Math.min(1, avail / 794);
+  sc.style.transform = `scale(${k})`; fr.style.width = (794 * k) + "px"; fr.style.height = (p.offsetHeight * k) + "px";
+  fr.classList.toggle("wide", 794 * k > avail);
+  const zb = document.querySelector('[data-act="vw-zoom"]');
+  if (zb) { const t = S.viewer.zoom ? "Sayfaya sığdır" : "Yakınlaştır"; zb.hidden = !small; zb.setAttribute("aria-pressed", String(!!S.viewer.zoom)); zb.setAttribute("aria-label", t); zb.innerHTML = `${S.viewer.zoom ? ICON.grid : ICON.search}<span class="lbl">${t}</span>`; }
+}
+function closeViewer(focusBack) {
+  const c = $("confirm"), app = document.querySelector(".app"); if (!S.viewer) return;
+  S.viewer = null; vwRO.disconnect(); c.hidden = true; c.innerHTML = ""; c.classList.remove("vw-open"); if (app) app.inert = false;
+  if (focusBack) { const t = document.querySelector("#top .cart"); if (t) t.focus(); }
+}
+window.addEventListener("resize", () => { if (S.viewer) fitViewer(); });
+/* "Devam et": proforma oluşturucuda kalınan adım açılır ve form görünür alana getirilir (firma ya da cari eksikse 1. adım) */
+function continueDraft() {
+  const q = S.q; if (!q) return;
+  let n = Math.min(3, Math.max(1, S.step || 1)); if (n > 1 && step1Missing(q).length && !q.sample) n = 1;
+  S.step = n; S.hsErr = ""; saveDraft();
+  if (S.view !== "proforma") { S.afterRoute = landOnForm; go("proforma"); } else { renderMain(); landOnForm(); }
+}
+function landOnForm() {
+  const f = $("formCard"); if (!f) return;
+  f.classList.remove("step-in"); void f.offsetWidth; f.classList.add("step-in");
+  f.scrollIntoView({block: "start", behavior: scrollMode()}); focusHeading("#formCard h2");
 }
 function closeMenu(focusBack) {
   const was = S.menu; S.menu = null; renderTop();
@@ -1625,8 +1669,8 @@ document.addEventListener("submit", async e => {
 document.addEventListener("keydown", e => {
   const t = e.target;
   if (t && t.id === "r_hs" && (e.key === "Enter" || e.key === "," || e.key === ";")) { e.preventDefault(); if (t.value.trim()) addHs(t.value); return; }
-  if (e.key === "Escape") { if (S.confirm) { S.confirm = null; renderConfirm(); } else if (S.menu) closeMenu(true); } });
-$("confirm").addEventListener("click", e => { if (e.target.id === "confirm") { S.confirm = null; renderConfirm(); } });
+  if (e.key === "Escape") { if (S.viewer) closeViewer(true); else if (S.confirm) { S.confirm = null; renderConfirm(); } else if (S.menu) closeMenu(true); } });
+$("confirm").addEventListener("click", e => { if (e.target.id !== "confirm") return; if (S.viewer) closeViewer(true); else { S.confirm = null; renderConfirm(); } });
 document.addEventListener("click", async e => {
   if (S.menu && !e.target.closest(S.menu === "draft" ? ".dmenu" : ".umenu")) { S.menu = null; renderTop(); }
   const b = e.target.closest("[data-act]"); if (!b) return;
@@ -1648,7 +1692,11 @@ document.addEventListener("click", async e => {
     case "umenu": S.menu = S.menu === "user" ? null : "user"; renderTop(); break;
     case "draft": if (S.menu === "draft") closeMenu(true); else { S.menu = "draft"; renderTop(); const p = $("draftPop"); if (p) p.focus(); } break;
     case "draft-close": closeMenu(b.tagName !== "A"); break;
-    case "draft-go": { const n = Math.min(3, Math.max(1, +b.dataset.n || 1)); closeMenu(false); setStep(n); break; }
+    case "draft-prev": closeMenu(false); openPreview(); break;
+    case "draft-cont": closeMenu(false); continueDraft(); break;
+    case "vw-close": closeViewer(true); break;
+    case "vw-cont": closeViewer(false); continueDraft(); break;
+    case "vw-zoom": if (S.viewer) { S.viewer.zoom = !S.viewer.zoom; fitViewer(); } break;
     case "draft-new": closeMenu(false); guard("Yeni proforma açılırsa", () => startNew()); break;
     case "avatar-up": { const i = $("avatarIn"); if (i) i.click(); break; }
     case "avatar-del": saveAvatar(null); break;
@@ -1811,8 +1859,9 @@ function fromHash() {
   if (S.view === "yonetim") loadUsers(true);
   if (S.view !== "alicilar" && S.view !== "proforma") { S.cariEdit = null; S.pick.mode = ""; }
   renderSide(); renderMain(); const m = $("main"); if (m) m.scrollTop = 0;
-  const a = document.activeElement;
-  if (prev !== S.view && !(a && a.closest && a.closest("#top"))) focusHeading("#main h1");
+  const a = document.activeElement, after = S.afterRoute; S.afterRoute = null;
+  if (after) after();
+  else if (prev !== S.view && !(a && a.closest && a.closest("#top"))) focusHeading("#main h1");
 }
 window.addEventListener("hashchange", fromHash);
 
