@@ -52,7 +52,7 @@ Statik bir sitedir (GitHub Pages). Giriş ve veri için [Supabase](https://supab
 | `img/lifts/`, `img/options/`, `img/spares/` | Katalogdan alınmış ürün fotoğrafları (ürün başına bir JPEG; dosya adı ürün kimliğidir) |
 | `img/thumbs/` | Aynı fotoğrafların liste ve önizleme için 200 px kopyaları (PDF/Excel ve ürün kartı asıllarını kullanır) |
 | `config.js` | Supabase bağlantı bilgileri |
-| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), ortak ürün kütüphanesi ve firmalar, proforma numarası, onay, duyuru ve yönetici fonksiyonları |
+| `schema.sql` | Veritabanı tabloları, satır kuralları (RLS), ortak ürün kütüphanesi ve firmalar, proforma numarası, onay, duyuru, denetim kayıtları ve yönetici fonksiyonları |
 | `duelsan.jpg` | Eski (firmasız) proformaların logosu |
 | `ndl.jpg`, `dlp.jpg` | Marka logoları (proformanın sağ üstü) |
 

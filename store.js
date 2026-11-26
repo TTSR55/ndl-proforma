@@ -103,14 +103,14 @@ function localStore() {
       if (d.users[e]) throw {code: "user_already_exists"};
       const salt = rid(), first = !Object.values(d.users).some(u => u.role === "admin");
       d.users[e] = {id: "demo-" + rid(), salt, hash: await hash(pw, salt), role: first ? "admin" : "user", status: first ? "active" : "pending", created_at: new Date().toISOString()};
-      d.session = {id: d.users[e].id, email: e}; save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0); return {confirm: false};
+      d.session = {id: d.users[e].id, email: e}; demoAudit(d, d.users[e].id, "login", "session", null, null, {ua: navigator.userAgent}); save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0); return {confirm: false};
     },
     async signIn(email, pw) {
       const d = load(), e = email.toLowerCase(), u = d.users[e];
       if (!u || u.hash !== await hash(pw, u.salt)) throw {code: "invalid_credentials"};
       if (u.status === "suspended") throw {code: "user_banned"};
       u.last_sign_in_at = new Date().toISOString();
-      d.session = {id: u.id, email: e}; save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0);
+      d.session = {id: u.id, email: e}; demoAudit(d, u.id, "login", "session", null, null, {ua: navigator.userAgent}); save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0);
     },
     async signOut() { const d = load(); d.session = null; save(d); setTimeout(() => cb("SIGNED_OUT", null), 0); },
     async reset() { throw {code: "demo_reset"}; },
@@ -127,10 +127,11 @@ function localStore() {
           data.sysNo = data.no = pre + y + "/" + String(d.counters[y]).padStart(4, "0");
         } else if (old.data && old.data.sysNo) { data.sysNo = data.no = old.data.sysNo; }
       }
+      demoDocAudit(d, this.uid, kind, id, old && old.data, data);
       m[key] = {kind, id, data, updated_at: new Date().toISOString()}; save(d); return data;
     },
     async putMany(rows) { const d = load(), m = d.docs[this.uid] = d.docs[this.uid] || {}, now = new Date().toISOString(); rows.forEach(r => { m[r.kind + "|" + r.id] = {kind: r.kind, id: r.id, data: r.data, updated_at: now}; }); save(d); },
-    async del(kind, id) { const d = load(), m = d.docs[this.uid] || {}; delete m[kind + "|" + id]; save(d); },
+    async del(kind, id) { const d = load(), m = d.docs[this.uid] || {}, old = m[kind + "|" + id]; if (old) demoDocAudit(d, this.uid, kind, id, old.data, null); delete m[kind + "|" + id]; save(d); },
     async profile() {
       const d = load(), e = Object.keys(d.users).find(k => d.users[k].id === this.uid), u = e && d.users[e];
       if (!u) return null;
@@ -142,23 +143,72 @@ function localStore() {
     async updAnn(id, patch) { const d = load(), a = (d.ann || []).find(x => x.id === id); if (a) Object.assign(a, patch); save(d); },
     async delAnn(id) { const d = load(); d.ann = (d.ann || []).filter(x => x.id !== id); save(d); },
     async rpc(fn, args) {
-      const d = load(), me = Object.values(d.users).find(u => u.id === this.uid);
+      const d = load(), me = Object.values(d.users).find(u => u.id === this.uid), now = new Date().toISOString();
+      args = args || {};
+      if (fn === "session_start") {
+        if (!me || me.status !== "active") return null;
+        const s = {id: "s-" + rid(), user_id: this.uid, email: demoEmail(d, this.uid), kind: args.p_kind === "login" ? "login" : "open", started_at: now, last_seen: now, active_secs: 0, device: navigator.userAgent.slice(0, 300)};
+        d.sessions = (d.sessions || []).concat(s).slice(-3000); save(d); return s.id;
+      }
+      if (fn === "session_ping") {
+        const s = (d.sessions || []).find(x => x.id === args.sid && x.user_id === this.uid);
+        if (s && me && me.status === "active") { const el = Math.ceil((Date.now() - Date.parse(s.last_seen)) / 1000) + 5; s.active_secs += Math.min(Math.max(Number(args.add_secs) || 0, 0), 300, el); s.last_seen = now; save(d); }
+        return null;
+      }
+      if (fn === "audit_event") {
+        if (!me || me.status !== "active") return null;
+        if (!["pdf", "xlsx"].includes(args.p_action)) throw {message: "bad_action"};
+        demoAudit(d, this.uid, args.p_action, "quote", args.p_target, args.p_label, args.p_detail); save(d); return null;
+      }
       if (!me || me.role !== "admin" || me.status !== "active") throw {message: "not_admin"};
+      const since = args.since ? Date.parse(args.since) : 0;
+      if (fn === "admin_audit_quotes") return Object.entries(d.docs).flatMap(([uid, m]) => Object.values(m).filter(r => r.kind === "quote").map(r => {
+        const {items, seller, ...rest} = r.data || {};
+        return {owner: uid, email: demoEmail(d, uid), id: r.id, data: Object.assign(rest, {sellerName: (seller && seller.company) || ""}), item_count: (items || []).length, updated_at: r.updated_at};
+      }));
+      if (fn === "admin_audit_sessions") return (d.sessions || []).filter(s => !since || Date.parse(s.last_seen) >= since).map(s => Object.assign({}, s, {email: demoEmail(d, s.user_id) || s.email})).sort((a, b) => b.started_at.localeCompare(a.started_at));
+      if (fn === "admin_audit_log") return (d.audit || []).filter(e => !since || Date.parse(e.at) >= since).map(e => Object.assign({}, e, {email: demoEmail(d, e.user_id) || e.email})).sort((a, b) => b.id - a.id).slice(0, Math.min(Math.max(Number(args.max_rows) || 5000, 1), 20000));
       const entry = id => Object.entries(d.users).find(([, u]) => u.id === id);
       if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length, must_change: !!u.must_change}))
         .sort((a, b) => (b.status === "pending") - (a.status === "pending") || String(b.created_at).localeCompare(String(a.created_at)));
       const hit = entry(args && args.target); if (!hit) throw {message: "no_user"};
       if (hit[1].id === this.uid) throw {message: "cannot_change_self"};
-      if (fn === "admin_set_status") { if (!["active", "suspended"].includes(args.new_status)) throw {message: "bad_status"}; hit[1].status = args.new_status; hit[1].decided_at = new Date().toISOString(); save(d); return null; }
-      if (fn === "admin_set_password") { const pw = String(args.new_password || ""); if (pw.length < 10 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) throw {message: "weak_password"}; hit[1].salt = rid(); hit[1].hash = await hash(pw, hit[1].salt); hit[1].must_change = true; save(d); return null; }
-      if (fn === "admin_delete_user") { delete d.users[hit[0]]; delete d.docs[hit[1].id]; save(d); return null; }
+      if (fn === "admin_set_status") { if (!["active", "suspended"].includes(args.new_status)) throw {message: "bad_status"}; const prev = hit[1].status; hit[1].status = args.new_status; hit[1].decided_at = now; demoAudit(d, this.uid, "user_status", "user", hit[1].id, hit[0], {from: prev, to: args.new_status}); save(d); return null; }
+      if (fn === "admin_set_password") { const pw = String(args.new_password || ""); if (pw.length < 10 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) throw {message: "weak_password"}; hit[1].salt = rid(); hit[1].hash = await hash(pw, hit[1].salt); hit[1].must_change = true; demoAudit(d, this.uid, "user_password", "user", hit[1].id, hit[0], {}); save(d); return null; }
+      if (fn === "admin_delete_user") { const nq = Object.values(d.docs[hit[1].id] || {}).filter(r => r.kind === "quote").length; demoAudit(d, this.uid, "user_delete", "user", hit[1].id, hit[0], {quotes: nq}); delete d.users[hit[0]]; delete d.docs[hit[1].id]; save(d); return null; }
       throw {message: "unknown_function"};
     },
     /* ortak kütüphane ve firmaların demo karşılığı: tüm demo hesaplarında ortak, yalnızca yönetici yazar */
     async listShared() { return Object.values(load().shared || {}); },
-    async putShared(kind, id, data) { const d = load(); demoAdmin(d, this.uid); d.shared = d.shared || {}; d.shared[kind + "|" + id] = {kind, id, data: JSON.parse(JSON.stringify(data))}; save(d); return data; },
+    async putShared(kind, id, data) { const d = load(); demoAdmin(d, this.uid); d.shared = d.shared || {}; demoSharedAudit(d, this.uid, kind, id, (d.shared[kind + "|" + id] || {}).data, data); d.shared[kind + "|" + id] = {kind, id, data: JSON.parse(JSON.stringify(data))}; save(d); return data; },
     async putSharedMany(rows) { const d = load(); demoAdmin(d, this.uid); d.shared = d.shared || {}; rows.forEach(r => { d.shared[r.kind + "|" + r.id] = {kind: r.kind, id: r.id, data: r.data}; }); save(d); },
-    async delShared(kind, id) { const d = load(); demoAdmin(d, this.uid); if (d.shared) delete d.shared[kind + "|" + id]; save(d); }
+    async delShared(kind, id) { const d = load(); demoAdmin(d, this.uid); if (d.shared && d.shared[kind + "|" + id]) demoSharedAudit(d, this.uid, kind, id, d.shared[kind + "|" + id].data, null); if (d.shared) delete d.shared[kind + "|" + id]; save(d); }
   };
 }
 function demoAdmin(d, uid) { const me = Object.values(d.users).find(u => u.id === uid); if (!me || me.role !== "admin" || me.status !== "active") throw {code: "42501", message: "row-level security"}; }
+
+/* denetim kayıtlarının demo karşılığı (sunucuda schema.sql · 9: audit_log tablosu ve tetikleyiciler) */
+const demoEmail = (d, uid) => (Object.entries(d.users).find(([, u]) => u.id === uid) || [null])[0];
+function demoAudit(d, uid, action, kind, target, label, detail) {
+  d.audit = d.audit || []; d.auditSeq = (d.auditSeq || 0) + 1;
+  d.audit.push({id: d.auditSeq, at: new Date().toISOString(), user_id: uid, email: demoEmail(d, uid), action, kind, target_id: target || null, label: label || null, detail: detail || {}});
+  if (d.audit.length > 5000) d.audit.splice(0, d.audit.length - 5000);
+}
+function demoDocAudit(d, uid, kind, id, o, n) {
+  const x = n || o || {};
+  if (kind === "quote") {
+    if (!o) return demoAudit(d, uid, "quote_create", "quote", id, x.no, {buyer: x.buyer, total: x.total, currency: x.currency, brand: x.brand, lang: x.lang});
+    if (!n) return demoAudit(d, uid, "quote_delete", "quote", id, x.no, {buyer: x.buyer, total: x.total, currency: x.currency, stage: x.stage});
+    const strip = v => { const c = Object.assign({}, v); ["stage", "stageAt", "stageLog", "updatedAt"].forEach(k => delete c[k]); return JSON.stringify(c); };
+    if ((o.stage || "prepared") !== (n.stage || "prepared")) demoAudit(d, uid, "quote_stage", "quote", id, x.no, {from: o.stage || "prepared", to: n.stage, buyer: x.buyer});
+    if (strip(o) !== strip(n)) demoAudit(d, uid, "quote_update", "quote", id, x.no, {buyer: x.buyer, total: n.total, prevTotal: o.total, currency: x.currency});
+  } else if (kind === "customer") {
+    const same = o && n && JSON.stringify(Object.assign({}, o, {updatedAt: 0})) === JSON.stringify(Object.assign({}, n, {updatedAt: 0}));
+    if (!same) demoAudit(d, uid, "customer_" + (!o ? "create" : !n ? "delete" : "update"), "customer", id, x.name || id, {code: x.code});
+  }
+}
+function demoSharedAudit(d, uid, kind, id, o, n) {
+  if (o && n && JSON.stringify(o) === JSON.stringify(n)) return;
+  const x = n || o || {};
+  demoAudit(d, uid, kind + "_" + (!o ? "create" : !n ? "delete" : "update"), kind, id, kind === "product" ? [x.code, x.name].filter(Boolean).join(" ") : (x.name || x.company || id), {});
+}

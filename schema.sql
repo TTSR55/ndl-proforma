@@ -5,6 +5,7 @@
 -- docs     : her satır bir kullanıcıya aittir (user_id). Tür (kind): quote = proforma, customer = cari kart,
 --            product = ürün kütüphanesi, settings = firma ve banka bilgileri.
 -- profiles : her hesabın rolü (user / admin) ve durumu (pending = onay bekliyor, active, suspended = donduruldu).
+-- audit_log, app_sessions : denetim (girişler, kullanım süresi, işlem geçmişi); yalnızca yönetici okur (bkz. 9).
 -- Yeni kayıtlar "pending" başlar; yönetici onaylayana kadar hiçbir veriye erişemez. Dondurulan hesap giriş yapamaz.
 
 -- 1) Kullanıcı verileri ------------------------------------------------------------------------------
@@ -249,23 +250,32 @@ $$;
 
 create or replace function public.admin_set_status(target uuid, new_status text) returns void
 language plpgsql security definer set search_path = '' as $$
+declare prev text;
 begin
   if not public.is_admin() then raise exception 'not_admin' using errcode = '42501'; end if;
   if target = auth.uid() then raise exception 'cannot_change_self' using errcode = '42501'; end if;
   if new_status not in ('active', 'suspended') then raise exception 'bad_status' using errcode = '22023'; end if;
+  select p.status into prev from public.profiles p where p.id = target;
   update public.profiles set status = new_status, decided_at = now(), decided_by = auth.uid() where id = target;
   if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
   -- dondurulan hesap giriş de yapamaz; aktif edilince yasak kalkar
   update auth.users set banned_until = case when new_status = 'suspended' then now() + interval '100 years' else null end where id = target;
+  perform public.audit_add(auth.uid(), 'user_status', 'user', target::text, (select p.email from public.profiles p where p.id = target), jsonb_build_object('from', prev, 'to', new_status));
 end $$;
 
 create or replace function public.admin_delete_user(target uuid) returns void
 language plpgsql security definer set search_path = '' as $$
+declare em text; nq bigint;
 begin
   if not public.is_admin() then raise exception 'not_admin' using errcode = '42501'; end if;
   if target = auth.uid() then raise exception 'cannot_change_self' using errcode = '42501'; end if;
-  delete from auth.users where id = target;   -- profil ve tüm kayıtları (docs) da silinir
+  select p.email into em from public.profiles p where p.id = target;
+  select count(*) into nq from public.docs d where d.user_id = target and d.kind = 'quote';
+  perform set_config('ndl.cascade', 'on', true);   -- zincirleme silinen kayıtlar tek tek denetime yazılmaz (bkz. audit_docs)
+  delete from auth.users where id = target;   -- profil ve tüm kayıtları (docs) da silinir; denetim geçmişi korunur
+  perform set_config('ndl.cascade', 'off', true);
   if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
+  perform public.audit_add(auth.uid(), 'user_delete', 'user', target::text, em, jsonb_build_object('quotes', nq));
 end $$;
 
 -- geçici şifre: kurallara uymalı; kullanıcının açık oturumları kapatılır ve ilk girişte yeni şifre ister
@@ -280,6 +290,7 @@ begin
   if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
   update public.profiles set must_change = true where id = target;
   delete from auth.sessions where user_id = target;
+  perform public.audit_add(auth.uid(), 'user_password', 'user', target::text, (select p.email from public.profiles p where p.id = target), '{}'::jsonb);
 end $$;
 
 -- 8) Duyurular: yönetici yazar, tüm aktif kullanıcılar görür ------------------------------------------
@@ -319,3 +330,196 @@ grant execute on function public.admin_list_users() to authenticated;
 grant execute on function public.admin_set_status(uuid, text) to authenticated;
 grant execute on function public.admin_delete_user(uuid) to authenticated;
 grant execute on function public.admin_set_password(uuid, text) to authenticated;
+
+-- 9) Denetim: girişler, kullanım süresi ve işlem geçmişi ----------------------------------------------
+--    Yalnızca aktif yönetici okur (aşağıdaki admin_audit_* fonksiyonları). Kullanıcılar bu tabloları hiçbir şekilde
+--    okuyamaz ve doğrudan yazamaz; tablolarda kullanıcı kuralı (policy) yoktur ve tüm yetkiler kaldırılmıştır.
+--    Kayıtlar veritabanında üretilir: proforma ve cari değişiklikleri tetikleyiciyle, girişler oturum açılışıyla yazılır.
+--    Denetim kaydı yazılamazsa (ör. beklenmeyen bir hata) asıl işlem yine tamamlanır.
+--    Silinen hesabın geçmişi korunur (e-postası kayıtta saklanır).
+create table if not exists public.audit_log (
+  id        bigint      generated always as identity primary key,
+  at        timestamptz not null default now(),
+  user_id   uuid,
+  email     text,
+  action    text        not null check (char_length(action) <= 40),
+  kind      text        check (char_length(kind) <= 20),
+  target_id text        check (char_length(target_id) <= 120),
+  label     text        check (char_length(label) <= 200),
+  detail    jsonb       not null default '{}'::jsonb check (jsonb_typeof(detail) = 'object' and pg_column_size(detail) <= 4096)
+);
+create index if not exists audit_log_at on public.audit_log (at desc);
+create index if not exists audit_log_user_at on public.audit_log (user_id, at desc);
+alter table public.audit_log enable row level security;
+revoke all on public.audit_log from anon, authenticated;
+
+-- kullanım oturumu: uygulama açıldığında başlar; açık ve etkin olduğu sürece dakikada bir güncellenir.
+-- active_secs: sekme önde ve son 5 dakikada etkileşim varken geçen süre (gerçek kullanım).
+create table if not exists public.app_sessions (
+  id          uuid        primary key default gen_random_uuid(),
+  user_id     uuid        not null,
+  email       text,
+  kind        text        not null default 'open' check (kind in ('login', 'open')),
+  started_at  timestamptz not null default now(),
+  last_seen   timestamptz not null default now(),
+  active_secs integer     not null default 0 check (active_secs >= 0),
+  device      text        check (char_length(device) <= 300)
+);
+create index if not exists app_sessions_started on public.app_sessions (started_at desc);
+create index if not exists app_sessions_user on public.app_sessions (user_id, started_at desc);
+alter table public.app_sessions enable row level security;
+revoke all on public.app_sessions from anon, authenticated;
+
+-- iç yardımcı: denetim kaydı ekler. Kullanıcılar çağıramaz (yalnızca aşağıdaki tetikleyiciler ve fonksiyonlar).
+create or replace function public.audit_add(a_user uuid, a_action text, a_kind text, a_target text, a_label text, a_detail jsonb)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.audit_log (user_id, email, action, kind, target_id, label, detail)
+  values (a_user, (select p.email from public.profiles p where p.id = a_user), left(a_action, 40), left(a_kind, 20), left(a_target, 120), left(a_label, 200),
+          case when jsonb_typeof(a_detail) = 'object' and pg_column_size(a_detail) <= 4096 then a_detail else '{}'::jsonb end);
+exception when others then null;   -- denetim kaydı hiçbir işlemi engellemez
+end $$;
+
+-- proforma ve cari kart değişiklikleri. Hesap silinirken zincirleme silinen kayıtlar ayrıca yazılmaz (hesap silme kaydı yeterli).
+create or replace function public.audit_docs() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare k text; rid text; owner uuid; d jsonb; who uuid; strip text[] := array['stage', 'stageAt', 'stageLog', 'updatedAt'];
+begin
+  if pg_trigger_depth() > 1 or current_setting('ndl.cascade', true) = 'on' then return null; end if;
+  if tg_op = 'DELETE' then k := old.kind; rid := old.id; owner := old.user_id; d := old.data;
+  else k := new.kind; rid := new.id; owner := new.user_id; d := new.data; end if;
+  if k not in ('quote', 'customer') then return null; end if;
+  who := coalesce(auth.uid(), owner);
+  if k = 'quote' then
+    if tg_op = 'INSERT' then
+      perform public.audit_add(who, 'quote_create', 'quote', rid, d->>'no', jsonb_build_object('buyer', d->'buyer', 'total', d->'total', 'currency', d->'currency', 'brand', d->'brand', 'lang', d->'lang'));
+    elsif tg_op = 'DELETE' then
+      perform public.audit_add(who, 'quote_delete', 'quote', rid, d->>'no', jsonb_build_object('buyer', d->'buyer', 'total', d->'total', 'currency', d->'currency', 'stage', d->'stage'));
+    else
+      if coalesce(old.data->>'stage', 'prepared') is distinct from coalesce(new.data->>'stage', 'prepared') then
+        perform public.audit_add(who, 'quote_stage', 'quote', rid, d->>'no', jsonb_build_object('from', coalesce(old.data->>'stage', 'prepared'), 'to', new.data->>'stage', 'buyer', d->'buyer'));
+      end if;
+      if (old.data - strip) is distinct from (new.data - strip) then
+        perform public.audit_add(who, 'quote_update', 'quote', rid, d->>'no', jsonb_build_object('buyer', d->'buyer', 'total', d->'total', 'prevTotal', old.data->'total', 'currency', d->'currency'));
+      end if;
+    end if;
+  else
+    if tg_op = 'UPDATE' and (old.data - 'updatedAt') is not distinct from (new.data - 'updatedAt') then return null; end if;
+    perform public.audit_add(who, 'customer_' || case tg_op when 'INSERT' then 'create' when 'UPDATE' then 'update' else 'delete' end,
+                             'customer', rid, coalesce(nullif(d->>'name', ''), rid), jsonb_build_object('code', d->'code'));
+  end if;
+  return null;
+exception when others then return null;
+end $$;
+drop trigger if exists ndl_audit_docs on public.docs;
+create trigger ndl_audit_docs after insert or update or delete on public.docs for each row execute function public.audit_docs();
+
+-- ortak ürün kütüphanesi ve firma kayıtlarındaki değişiklikler (yönetici işlemleri)
+create or replace function public.audit_shared() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare k text; rid text; d jsonb;
+begin
+  if pg_trigger_depth() > 1 then return null; end if;
+  if tg_op = 'UPDATE' and old.data is not distinct from new.data then return null; end if;
+  if tg_op = 'DELETE' then k := old.kind; rid := old.id; d := old.data; else k := new.kind; rid := new.id; d := new.data; end if;
+  perform public.audit_add(auth.uid(), k || '_' || case tg_op when 'INSERT' then 'create' when 'UPDATE' then 'update' else 'delete' end, k, rid,
+    case when k = 'product' then trim(coalesce(d->>'code', '') || ' ' || coalesce(d->>'name', '')) else coalesce(nullif(d->>'name', ''), d->>'company', rid) end, '{}'::jsonb);
+  return null;
+exception when others then return null;
+end $$;
+drop trigger if exists ndl_audit_shared on public.shared;
+create trigger ndl_audit_shared after insert or update or delete on public.shared for each row execute function public.audit_shared();
+
+-- girişler: her başarılı giriş (şifre, e-posta bağlantısı, şifre yenileme) yeni bir oturum açar.
+-- Tetikleyici kurulamazsa (ör. barındırma kısıtı) kurulum yine tamamlanır; girişler bu durumda uygulamanın açılış kaydından izlenir.
+create or replace function public.audit_login() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  perform public.audit_add(new.user_id, 'login', 'session', new.id::text, null, jsonb_build_object('ua', left(coalesce(to_jsonb(new)->>'user_agent', ''), 300)));
+  return new;
+exception when others then return new;
+end $$;
+do $$ begin
+  execute 'drop trigger if exists ndl_audit_login on auth.sessions';
+  execute 'create trigger ndl_audit_login after insert on auth.sessions for each row execute function public.audit_login()';
+exception when others then raise notice 'Giriş tetikleyicisi kurulamadı: %', sqlerrm;
+end $$;
+
+-- uygulama açılışı: oturum kaydı başlatır ve kimliğini döndürür (cihaz bilgisi isteğin tarayıcı bilgisinden alınır)
+create or replace function public.session_start(p_kind text default 'open') returns uuid
+language plpgsql security definer set search_path = '' as $$
+declare sid uuid; ua text;
+begin
+  if not public.is_active() then return null; end if;
+  begin ua := nullif(current_setting('request.headers', true), '')::json->>'user-agent'; exception when others then ua := null; end;
+  insert into public.app_sessions (user_id, email, kind, device)
+  values (auth.uid(), (select p.email from public.profiles p where p.id = auth.uid()), case when p_kind = 'login' then 'login' else 'open' end, left(coalesce(ua, ''), 300))
+  returning id into sid;
+  return sid;
+end $$;
+
+-- dakikada bir: son etkinlik zamanı ve etkin kullanım süresi. Eklenen süre, son güncellemeden bu yana geçen süreyi aşamaz.
+create or replace function public.session_ping(sid uuid, add_secs integer default 0) returns void
+language sql security definer set search_path = '' as $$
+  update public.app_sessions
+     set active_secs = active_secs + least(greatest(coalesce(add_secs, 0), 0), 300, ceil(extract(epoch from (now() - last_seen)))::int + 5),
+         last_seen = now()
+   where id = sid and user_id = auth.uid() and last_seen > now() - interval '12 hours' and public.is_active();
+$$;
+
+-- uygulamadaki işlemler: PDF ve Excel indirme
+create or replace function public.audit_event(p_action text, p_target text default null, p_label text default null, p_detail jsonb default '{}'::jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.is_active() then return; end if;
+  if p_action not in ('pdf', 'xlsx') then raise exception 'bad_action' using errcode = '22023'; end if;
+  perform public.audit_add(auth.uid(), p_action, 'quote', p_target, p_label, p_detail);
+end $$;
+
+-- yönetici okuma fonksiyonları
+create or replace function public.admin_audit_quotes()
+returns table (owner uuid, email text, id text, data jsonb, item_count integer, updated_at timestamptz)
+language sql stable security definer set search_path = '' as $$
+  select d.user_id, p.email, d.id,
+         (d.data - 'items' - 'seller') || jsonb_build_object('sellerName', coalesce(d.data->'seller'->>'company', '')),
+         case when jsonb_typeof(d.data->'items') = 'array' then jsonb_array_length(d.data->'items') else 0 end, d.updated_at
+    from public.docs d left join public.profiles p on p.id = d.user_id
+   where public.is_admin() and d.kind = 'quote'
+   order by d.updated_at desc
+   limit 20000;
+$$;
+create or replace function public.admin_audit_sessions(since timestamptz default null)
+returns table (id uuid, user_id uuid, email text, kind text, started_at timestamptz, last_seen timestamptz, active_secs integer, device text)
+language sql stable security definer set search_path = '' as $$
+  select s.id, s.user_id, coalesce(p.email, s.email), s.kind, s.started_at, s.last_seen, s.active_secs, s.device
+    from public.app_sessions s left join public.profiles p on p.id = s.user_id
+   where public.is_admin() and (since is null or s.last_seen >= since)
+   order by s.started_at desc
+   limit 10000;
+$$;
+create or replace function public.admin_audit_log(since timestamptz default null, max_rows integer default 5000)
+returns table (id bigint, at timestamptz, user_id uuid, email text, action text, kind text, target_id text, label text, detail jsonb)
+language sql stable security definer set search_path = '' as $$
+  select a.id, a.at, a.user_id, coalesce(p.email, a.email), a.action, a.kind, a.target_id, a.label, a.detail
+    from public.audit_log a left join public.profiles p on p.id = a.user_id
+   where public.is_admin() and (since is null or a.at >= since)
+   order by a.at desc
+   limit least(greatest(coalesce(max_rows, 5000), 1), 20000);
+$$;
+
+revoke all on function public.audit_add(uuid, text, text, text, text, jsonb) from public, anon, authenticated;
+revoke all on function public.audit_docs() from public, anon, authenticated;
+revoke all on function public.audit_shared() from public, anon, authenticated;
+revoke all on function public.audit_login() from public, anon, authenticated;
+revoke all on function public.session_start(text) from public, anon;
+revoke all on function public.session_ping(uuid, integer) from public, anon;
+revoke all on function public.audit_event(text, text, text, jsonb) from public, anon;
+revoke all on function public.admin_audit_quotes() from public, anon;
+revoke all on function public.admin_audit_sessions(timestamptz) from public, anon;
+revoke all on function public.admin_audit_log(timestamptz, integer) from public, anon;
+grant execute on function public.session_start(text) to authenticated;
+grant execute on function public.session_ping(uuid, integer) to authenticated;
+grant execute on function public.audit_event(text, text, text, jsonb) to authenticated;
+grant execute on function public.admin_audit_quotes() to authenticated;
+grant execute on function public.admin_audit_sessions(timestamptz) to authenticated;
+grant execute on function public.admin_audit_log(timestamptz, integer) to authenticated;

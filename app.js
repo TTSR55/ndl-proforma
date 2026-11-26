@@ -4,13 +4,15 @@
 const $ = id => document.getElementById(id);
 const root = $("root");
 let Store = null;
-Object.assign(S, {ann: [], annEdit: {title: "", body: "", level: "info"}, keepQ: false, qCari: "", role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: ""}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}});
+Object.assign(S, {ann: [], annEdit: {title: "", body: "", level: "info"}, keepQ: false, qCari: "", role: "user", pendingCount: 0, admin: {users: null, loading: false, filter: "", tab: "users"}, cari: {sel: null, search: ""}, cariEdit: null, pick: {search: "", mode: ""}, audit: newAudit()});
 const RECOVERY = /type=recovery/.test(location.hash + location.search);
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} };
 const opt = (v, cur, label) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(label ?? v)}</option>`;
 const dlist = (id, vals) => `<datalist id="${id}">${vals.map(v => `<option value="${esc(v)}"></option>`).join("")}</datalist>`;
 const I = p => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`;
+/* denetim bölümünün durumu (yalnızca yönetici) */
+function newAudit() { return {loaded: false, loading: false, err: "", period: "30", user: "", view: "users", group: "user", cat: "", more: 0, at: 0, quotes: [], sessions: [], log: [], open: new Set(), coll: new Set()}; }
 const ICON = {
   doc: I('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h4"/>'),
   stack: I('<path d="M4 7l8-4 8 4-8 4z"/><path d="M4 12l8 4 8-4M4 17l8 4 8-4"/>'),
@@ -98,6 +100,37 @@ async function loadLogos() {
 const lastBrand = () => { const b = lsGet("ndl-brand"); return BRANDS.includes(b) ? b : "NDL"; };
 BRAND_DEF = lastBrand();
 
+/* ---------- kullanım oturumu ----------
+   Uygulama açılınca sunucuda bir oturum kaydı başlar; dakikada bir son etkinlik zamanı ve etkin kullanım süresi eklenir.
+   Etkin süre yalnızca sekme öndeyken ve son 5 dakikada fare, klavye ya da dokunma varken sayılır. Kayıtları yalnızca yönetici görür. */
+const USAGE = {sid: null, t: null, last: 0, input: 0, acc: 0};
+const IDLE_MS = 5 * 60000;
+function usageCount() {
+  const now = Date.now(), dt = Math.min(Math.max(now - USAGE.last, 0), 120000); USAGE.last = now;
+  if (document.visibilityState === "visible" && now - USAGE.input < IDLE_MS) USAGE.acc += dt;
+}
+function usageFlush() {
+  if (!USAGE.sid || !Store) return; usageCount();
+  const add = Math.round(USAGE.acc / 1000); USAGE.acc = 0;
+  Store.rpc("session_ping", {sid: USAGE.sid, add_secs: add}).catch(() => {});
+  const v = usageSaved(); if (v && v.sid === USAGE.sid) usageSave(Object.assign(v, {at: Date.now()}));
+}
+/* aynı sekmede sayfa yenilenince oturum yeniden başlamaz, sürer (sekme kapanınca sessionStorage silinir) */
+const USAGE_KEY = "ndl-usage";
+const usageSaved = () => { try { return JSON.parse(sessionStorage.getItem(USAGE_KEY) || "null"); } catch (e) { return null; } };
+const usageSave = v => { try { if (v) sessionStorage.setItem(USAGE_KEY, JSON.stringify(v)); else sessionStorage.removeItem(USAGE_KEY); } catch (e) {} };
+function usageStop(end) { if (USAGE.t) clearInterval(USAGE.t); if (USAGE.sid) usageFlush(); if (end) usageSave(null); Object.assign(USAGE, {sid: null, t: null, acc: 0}); }
+function usageStart(kind) {
+  usageStop(); USAGE.last = USAGE.input = Date.now(); USAGE.t = setInterval(usageFlush, 60000);
+  const uid = S.user && S.user.id, prev = usageSaved();
+  if (kind !== "login" && prev && prev.uid === uid && Date.now() - prev.at < 30 * 60000) { USAGE.sid = prev.sid; usageFlush(); return; }
+  Store.rpc("session_start", {p_kind: kind}).then(id => { USAGE.sid = id || null; if (id) usageSave({uid, sid: id, at: Date.now()}); }).catch(() => {});   // kurulmamışsa sessizce atlanır
+}
+const usageInput = () => { USAGE.input = Date.now(); };
+["pointerdown", "keydown", "wheel", "touchstart", "mousemove"].forEach(ev => addEventListener(ev, usageInput, {passive: true, capture: true}));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") usageFlush(); else USAGE.last = Date.now(); });
+addEventListener("pagehide", usageFlush);
+
 /* ---------- açılış ve oturum ---------- */
 function framed() { try { return window.top !== window.self; } catch (e) { return true; } }
 async function boot() {
@@ -126,6 +159,7 @@ async function enter(u) {
   if (!prof || prof.status !== "active") { S.entering = false; renderGate(prof); return; }
   if (prof.must_change) { S.entering = false; renderForcePw(); return; }
   S.role = prof.role === "admin" ? "admin" : "user"; S.qView = lsGet("ndl-qview") === "list" ? "list" : "group";
+  S.admin.tab = ADM_TABS.some(t => t[0] === lsGet("ndl-admtab")) ? lsGet("ndl-admtab") : "users";
   S.lib.brand = BRANDS.includes(lsGet("ndl-libbrand")) ? lsGet("ndl-libbrand") : "NDL"; BRAND_DEF = lastBrand();
   try { S.ann = await Store.listAnn(); } catch (e) { S.ann = []; }
   try {
@@ -148,6 +182,7 @@ async function enter(u) {
   if (/access_token|error_description|type=/.test(location.hash)) history.replaceState(null, "", location.pathname + "#proforma");
   renderShell(); fromHash();
   if (S.role === "admin") loadUsers(true);
+  usageStart(S.loginKind || "open"); S.loginKind = "";
 }
 /* onay bekleyen ya da dondurulmuş hesap: veriye erişim yok, yalnızca durum ekranı */
 /* yönetici geçici şifre verdiyse: yeni şifre belirlemeden devam edilmez */
@@ -167,9 +202,12 @@ function renderGate(prof) {
     <div class="row-between" style="width:100%;margin-top:6px">${susp ? "<span></span>" : `<button class="btn blue" data-act="gate-check">${ICON.check} Tekrar kontrol et</button>`}<button class="btn" data-act="logout">${ICON.out} Çıkış yap</button></div></div></div></div>`;
 }
 function leave() {
+  usageStop(true);
+  /* önceki hesabın "Geri al" bildirimi bir sonraki girişte kalmasın */
+  clearTimeout(toast._t); S.undo = null; const tt = $("toast"); if (tt) { tt.hidden = true; tt.innerHTML = ""; }
   Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], companies: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
   S.co = {sel: null, edit: null};
-  S.admin = {users: null, loading: false, filter: ""}; S.cari = {sel: null, search: ""}; S.qCari = ""; S.pick = {search: "", mode: ""};
+  S.admin = {users: null, loading: false, filter: "", tab: S.admin.tab}; S.audit = newAudit(); S.cari = {sel: null, search: ""}; S.qCari = ""; S.pick = {search: "", mode: ""};
   S.lib.edit = null; S.openRows.clear(); S.openQ.clear(); renderAuth();
 }
 function ingest(rows) {
@@ -901,9 +939,23 @@ async function loadUsers(quiet) {
   catch (e) { if (!quiet) toastErr("Kullanıcılar alınamadı: " + authError(e)); S.admin.users = S.admin.users || []; }
   finally { S.admin.loading = false; renderSide(); renderTop(); if (S.view === "yonetim") renderMain(); }
 }
+/* Yönetim üç bölümdür: hesaplar, denetim ve duyurular. Denetim yalnızca yöneticiye görünür. */
+const ADM_TABS = [["users", "Hesaplar"], ["audit", "Denetim"], ["ann", "Duyurular"]];
 function pageAdmin() {
   if (S.role !== "admin") return pageProforma();
-  if (S.admin.users == null) { loadUsers(); return `<div class="page"><div class="empty">Kullanıcılar yükleniyor…</div></div>`; }
+  const tab = ADM_TABS.some(t => t[0] === S.admin.tab) ? S.admin.tab : "users";
+  if (tab === "users" && S.admin.users == null) loadUsers();
+  if (tab === "audit" && !S.audit.loaded && !S.audit.loading && !S.audit.err) queueMicrotask(loadAudit);
+  const head = {users: ["Kullanıcılar", "Yeni kayıtlar sizin onayınızı bekler; onaylanmayan hesap hiçbir veriye erişemez. Dondurulan hesap giriş yapamaz. Silinen hesabın tüm kayıtları da silinir."],
+    audit: ["Denetim", "Kim hangi proformayı oluşturdu, proformalar hangi aşamada, hangi hesap ne zaman giriş yaptı ve ne kadar kullandı. Bu bölümü yalnızca yöneticiler görür; kullanıcılar kendi kayıtlarını da göremez."],
+    ann: ["Duyurular", "Yayınlanan duyuru tüm aktif kullanıcıların sayfasının en üstünde görünür."]}[tab];
+  const btn = tab === "users" ? `<button class="btn" data-act="adm-refresh">${ICON.list} Yenile</button>` : tab === "audit" ? `<button class="btn" data-act="aud-refresh"${S.audit.loading ? " disabled" : ""}>${ICON.list} Yenile</button>` : "";
+  const tabs = `<div class="seg adm-tabs" role="group" aria-label="Yönetim bölümleri">${ADM_TABS.map(([k, l]) => `<button data-act="adm-tab" data-v="${k}" aria-pressed="${tab === k}">${l}${k === "users" && S.pendingCount ? ` <span class="tag red">${S.pendingCount}</span>` : ""}</button>`).join("")}</div>`;
+  const body = tab === "audit" ? auditBody() : tab === "ann" ? annAdmin() : usersBody();
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Yönetim</div><h1>${head[0]}</h1><p class="lead">${head[1]}</p></div>${btn}</div>${tabs}${body}</div>`;
+}
+function usersBody() {
+  if (S.admin.users == null) return `<div class="empty">Kullanıcılar yükleniyor…</div>`;
   const all = S.admin.users, f = S.admin.filter, cnt = st => all.filter(u => u.status === st).length, list = all.filter(u => !f || u.status === f);
   const rows = list.map(u => { const me = S.user && u.id === S.user.id, [cls, lbl] = USER_STATUS[u.status] || ["grey", u.status];
     const acts = me ? `<span class="muted small">Kendi hesabınız</span>`
@@ -915,13 +967,167 @@ function pageAdmin() {
     return `<tr class="row${u.status === "pending" ? " promo" : ""}"><td><b>${esc(u.email || "—")}</b>${me ? ` <span class="tag blue">Siz</span>` : ""}<span class="sub">${u.role === "admin" ? "Yönetici" : "Kullanıcı"}</span></td>
       <td><span class="tag ${cls}">${lbl}</span>${u.must_change ? ` <span class="tag grey">Geçici şifre</span>` : ""}</td><td class="num">${fmtTs(u.created_at)}</td><td class="num">${fmtTs(u.last_sign_in_at)}</td>
       <td>${u.email_confirmed_at ? `<span class="tag green">Onaylı</span>` : `<span class="tag amber">Bekliyor</span>`}</td><td class="c">${esc(u.doc_count ?? 0)}</td><td><div class="acts">${acts}</div></td></tr>`; }).join("");
-  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Yönetim</div><h1>Kullanıcılar</h1><p class="lead">Yeni kayıtlar sizin onayınızı bekler; onaylanmayan hesap hiçbir veriye erişemez. Dondurulan hesap giriş yapamaz. Silinen hesabın tüm kayıtları da silinir.</p></div>
-     <button class="btn" data-act="adm-refresh">${ICON.list} Yenile</button></div>
-   <div class="toolbar"><section class="card"><div class="seg" role="group" aria-label="Duruma göre filtrele" style="width:100%">${[["", "Tümü", all.length], ["pending", "Onay bekleyen", cnt("pending")], ["active", "Aktif", cnt("active")], ["suspended", "Dondurulan", cnt("suspended")]].map(([k, l, n]) => `<button data-act="adm-filter" data-f="${k}" aria-pressed="${f === k}">${l} <span class="muted">${n}</span></button>`).join("")}</div></section>
+  return `<div class="toolbar"><section class="card"><div class="seg" role="group" aria-label="Duruma göre filtrele" style="width:100%">${[["", "Tümü", all.length], ["pending", "Onay bekleyen", cnt("pending")], ["active", "Aktif", cnt("active")], ["suspended", "Dondurulan", cnt("suspended")]].map(([k, l, n]) => `<button data-act="adm-filter" data-f="${k}" aria-pressed="${f === k}">${l} <span class="muted">${n}</span></button>`).join("")}</div></section>
     <section class="card"><dl class="sumbox"><div><dt>Onay bekleyen</dt><dd class="${cnt("pending") ? "red" : ""}">${cnt("pending")}</dd></div><div><dt>Aktif</dt><dd class="green">${cnt("active")}</dd></div><div><dt>Dondurulan</dt><dd>${cnt("suspended")}</dd></div></dl></section></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Hesaplar</h2><span class="muted small">${list.length} / ${all.length}</span></div>
-    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>E-posta</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section>
-   ${annAdmin()}</div>`;
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>E-posta</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section>`;
+}
+
+/* ---------- DENETİM ----------
+   Veriler yalnızca yönetici fonksiyonlarından gelir (schema.sql · 9): tüm kullanıcıların proformaları, kullanım oturumları ve işlem geçmişi. */
+const AUD_PERIODS = [["1", "Bugün"], ["7", "Son 7 gün"], ["30", "Son 30 gün"], ["month", "Bu ay"], ["all", "Tümü"]];
+const AUD_VIEWS = [["users", "Kullanıcılar"], ["quotes", "Proformalar"], ["sessions", "Oturumlar"], ["log", "İşlem geçmişi"]];
+const AUD_CATS = [["", "Tümü"], ["login", "Girişler"], ["quote", "Proforma"], ["stage", "Aşama"], ["customer", "Cari"], ["download", "İndirme"], ["admin", "Yönetim"]];
+const AUD_PAGE = 150, ONLINE_MS = 150000;
+function auditSince(p) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  if (p === "all") return null;
+  if (p === "month") d.setDate(1); else d.setDate(d.getDate() - (Number(p) - 1));
+  return d;
+}
+async function loadAudit() {
+  const A = S.audit; if (A.loading || S.role !== "admin") return;
+  A.loading = true; A.err = ""; if (S.view === "yonetim") renderMain();
+  const since = auditSince(A.period), iso = since ? since.toISOString() : null;
+  try {
+    const [qs, ss, lg] = await Promise.all([Store.rpc("admin_audit_quotes"), Store.rpc("admin_audit_sessions", {since: iso}), Store.rpc("admin_audit_log", {since: iso, max_rows: 5000})]);
+    A.quotes = (qs || []).map(r => Object.assign({}, r.data || {}, {id: r.id, owner: r.owner, ownerEmail: r.email, itemCount: r.item_count, rowAt: r.updated_at}));
+    A.sessions = ss || []; A.log = lg || []; A.loaded = true; A.at = Date.now(); A.more = 0;
+    if (S.admin.users == null) loadUsers(true);
+  } catch (e) { A.err = isMissingTable(e) ? "setup" : authError(e); }
+  finally { A.loading = false; if (S.view === "yonetim") renderMain(); }
+}
+const tsMs = v => (typeof v === "number" ? v : Date.parse(v)) || 0;
+function fmtDur(sec) { sec = Math.max(0, Math.round(Number(sec) || 0)); if (sec < 60) return sec ? "1 dk'dan az" : "—"; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h ? `${h} sa${m ? " " + m + " dk" : ""}` : `${m} dk`; }
+function relTime(ms) {
+  if (!ms) return "—"; const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 90) return "az önce"; if (s < 3600) return Math.round(s / 60) + " dk önce"; if (s < 86400) return Math.round(s / 3600) + " sa önce";
+  const d = Math.floor((new Date(today() + "T23:59:59") - ms) / 864e5); return d <= 1 ? "dün" : d + " gün önce";
+}
+function uaShort(ua) {
+  ua = String(ua || ""); if (!ua) return "—";
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh|Mac OS X/.test(ua) ? "macOS" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+  const br = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /CriOS|Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [br, os].filter(Boolean).join(" · ") || "Diğer";
+}
+const audCreated = x => Number(x.createdAt) || tsMs(x.date ? x.date + "T12:00:00" : 0) || tsMs(x.rowAt);
+const audCat = a => a === "login" ? "login" : a === "quote_stage" ? "stage" : /^quote_/.test(a) ? "quote" : /^customer_/.test(a) ? "customer" : (a === "pdf" || a === "xlsx") ? "download" : "admin";
+const stageName = k => (STAGE_BY[k] || {l: k || "—"}).l;
+/* kişi listesi: tüm hesaplar ve kayıtlarda geçen (sonradan silinmiş) hesaplar */
+function audPeople() {
+  const A = S.audit, by = new Map();
+  (S.admin.users || []).forEach(u => by.set(u.id, {id: u.id, email: u.email || "—", role: u.role, status: u.status, lastSignIn: tsMs(u.last_sign_in_at)}));
+  const add = (id, email) => { if (id && !by.has(id)) by.set(id, {id, email: email || "Silinmiş hesap", gone: true}); };
+  A.quotes.forEach(x => add(x.owner, x.ownerEmail)); A.sessions.forEach(s => add(s.user_id, s.email)); A.log.forEach(e => add(e.user_id, e.email));
+  return by;
+}
+function audData() {
+  const A = S.audit, since = auditSince(A.period), from = since ? since.getTime() : 0, u = A.user;
+  const quotes = A.quotes.filter(x => audCreated(x) >= from && (!u || x.owner === u));
+  const sessions = A.sessions.filter(s => !u || s.user_id === u), log = A.log.filter(e => !u || e.user_id === u);
+  const hasLoginEv = A.log.some(e => e.action === "login");
+  const logins = hasLoginEv ? log.filter(e => e.action === "login").map(e => ({user_id: e.user_id, at: tsMs(e.at), ua: (e.detail || {}).ua}))
+    : sessions.filter(s => s.kind === "login").map(s => ({user_id: s.user_id, at: tsMs(s.started_at), ua: s.device}));
+  return {quotes, sessions, log, logins};
+}
+function auditBody() {
+  const A = S.audit;
+  if (A.err === "setup") return `<section class="card"><div class="empty"><b>Denetim kayıtları henüz kurulmamış.</b><br>Supabase → SQL Editor'de güncel <code>schema.sql</code> dosyasını bir kez çalıştırın; kayıtlar o andan itibaren tutulur.</div></section>`;
+  if (A.err) return `<section class="card"><div class="empty">Denetim verileri alınamadı: ${esc(A.err)}<div><button class="btn" data-act="aud-refresh">${ICON.list} Tekrar dene</button></div></div></section>`;
+  if (!A.loaded) return `<section class="card"><div class="empty">Denetim verileri yükleniyor…</div></section>`;
+  const people = audPeople(), D = audData(), act = sessionsActive(D.sessions);
+  const byCurT = byCurText(sumByCur(D.quotes)), won = D.quotes.filter(x => STAGE_BY[stageOf(x)].grp === "won").length;
+  const users = new Set(D.logins.map(l => l.user_id)), act7 = D.sessions.reduce((a, s) => a + (Number(s.active_secs) || 0), 0);
+  const kpi = (label, value, sub) => `<div class="kpi card"><span class="k-l">${label}</span><b class="k-v num">${value}</b><span class="k-s">${sub}</span></div>`;
+  const sel = `<div class="fld aud-user"><label for="aud_u">Kullanıcı</label><select id="aud_u" data-f="audit.user"><option value="">Tüm kullanıcılar</option>${[...people.values()].sort((a, b) => a.email.localeCompare(b.email, "tr")).map(p => opt(p.id, A.user, p.email + (p.gone ? " (silinmiş)" : ""))).join("")}</select></div>`;
+  const per = `<div class="fld"><span class="lbl" id="audPerLbl">Dönem</span><div class="seg" role="group" aria-labelledby="audPerLbl">${AUD_PERIODS.map(([k, l]) => `<button data-act="aud-period" data-v="${k}" aria-pressed="${A.period === k}"${A.loading ? " disabled" : ""}>${l}</button>`).join("")}</div></div>`;
+  const view = AUD_VIEWS.some(v => v[0] === A.view) ? A.view : "users";
+  return `<section class="card aud-bar">${per}${sel}<p class="muted small aud-at">${A.loading ? "Güncelleniyor…" : "Güncellendi: " + fmtTs(new Date(A.at).toISOString())}${act ? ` · <span class="online"><i aria-hidden="true"></i>${act} kişi şu an çevrimiçi</span>` : ""}</p></section>
+   <div class="kpis aud-kpis">${kpi("Giriş", D.logins.length, `${users.size} farklı hesap`)}${kpi("Etkin kullanım", fmtDur(act7), `${D.sessions.length} oturum`)}${kpi("Oluşturulan proforma", D.quotes.length, byCurT || "—")}${kpi("Olumlu sonuçlanan", won, D.quotes.length ? `%${Math.round(won * 100 / D.quotes.length)} · onaylanan ve siparişe dönüşen` : "dönemde proforma yok")}</div>
+   <div class="seg aud-views" role="group" aria-label="Denetim görünümü">${AUD_VIEWS.map(([k, l]) => `<button data-act="aud-view" data-v="${k}" aria-pressed="${view === k}">${l}</button>`).join("")}</div>
+   ${view === "quotes" ? audQuotes(D, people) : view === "sessions" ? audSessions(D, people) : view === "log" ? audLog(D, people) : audUsers(D, people)}`;
+}
+function sessionsActive(list) { const now = Date.now(); return new Set(list.filter(s => now - tsMs(s.last_seen) < ONLINE_MS).map(s => s.user_id)).size; }
+const curLines = by => Object.keys(by).length ? Object.entries(by).map(([c, v]) => `<span class="cl">${money(v, c)}</span>`).join("") : "—";
+const personCell = (p, sub) => `<b>${esc(p ? p.email : "—")}</b>${p && p.gone ? ` <span class="tag grey">Silinmiş</span>` : ""}${sub ? `<span class="sub">${sub}</span>` : ""}`;
+/* kullanıcı özeti: kişi başına giriş, kullanım, proforma ve aşama dağılımı */
+function audUsers(D, people) {
+  const A = S.audit, now = Date.now();
+  const rows = [...people.values()].filter(p => !A.user || p.id === A.user).map(p => {
+    const qs = D.quotes.filter(x => x.owner === p.id), ss = D.sessions.filter(s => s.user_id === p.id), lg = D.logins.filter(l => l.user_id === p.id);
+    const g = k => qs.filter(x => STAGE_BY[stageOf(x)].grp === k).length;
+    const lastLogin = Math.max(p.lastSignIn || 0, ...lg.map(l => l.at)), lastAct = Math.max(0, ...ss.map(s => tsMs(s.last_seen)), ...D.log.filter(e => e.user_id === p.id).map(e => tsMs(e.at)));
+    return {p, qs, ss, lg, open: g("open"), won: g("won"), lost: g("lost"), usage: ss.reduce((a, s) => a + (Number(s.active_secs) || 0), 0), lastLogin, lastAct, online: ss.some(s => now - tsMs(s.last_seen) < ONLINE_MS)};
+  }).filter(r => r.qs.length || r.ss.length || r.lg.length || !r.p.gone).sort((a, b) => b.lastAct - a.lastAct || a.p.email.localeCompare(b.p.email, "tr"));
+  const tr = r => `<tr class="row clk${A.user === r.p.id ? " on" : ""}" data-act="aud-user" data-id="${esc(r.p.id)}" title="Yalnızca bu kullanıcıyı göster">
+      <td>${personCell(r.p, (r.p.role === "admin" ? "Yönetici" : r.p.gone ? "" : "Kullanıcı") + (r.p.status && r.p.status !== "active" ? " · " + (USER_STATUS[r.p.status] || ["", r.p.status])[1] : ""))}${r.online ? ` <span class="online"><i aria-hidden="true"></i>Çevrimiçi</span>` : ""}</td>
+      <td class="num">${r.lastLogin ? fmtTs(new Date(r.lastLogin).toISOString()) : "—"}<span class="sub">${r.lastLogin ? relTime(r.lastLogin) : ""}</span></td>
+      <td class="c num">${r.lg.length}</td><td class="num">${fmtDur(r.usage)}<span class="sub">${r.ss.length} oturum</span></td>
+      <td class="c num"><b>${r.qs.length}</b></td>
+      <td><div class="aud-mix">${r.open ? `<span class="tag blue">${r.open} süreçte</span>` : ""}${r.won ? `<span class="tag green">${r.won} olumlu</span>` : ""}${r.lost ? `<span class="tag red">${r.lost} olumsuz</span>` : ""}${r.qs.length ? "" : `<span class="muted">—</span>`}</div></td>
+      <td class="num">${curLines(sumByCur(r.qs))}</td><td class="num">${relTime(r.lastAct)}</td></tr>`;
+  return `<section class="card"><div class="card-h"><h2 class="ttl">Kullanıcı özeti</h2><span class="muted small">Seçili dönem · satıra tıklayınca yalnızca o kullanıcı gösterilir</span>${A.user ? `<div class="acts"><button class="tag blue fchip" data-act="aud-user" data-id="" title="Kullanıcı filtresini kaldır">${esc((people.get(A.user) || {}).email || "")} ${ICON.x}</button></div>` : ""}</div>
+    ${rows.length ? `<div class="tbl-wrap"><table class="tbl aud"><thead><tr><th>Kullanıcı</th><th>Son giriş</th><th class="c">Giriş</th><th>Etkin kullanım</th><th class="c">Proforma</th><th>Aşamalar</th><th>Tutar</th><th>Son işlem</th></tr></thead><tbody>${rows.map(tr).join("")}</tbody></table></div>` : `<div class="empty">Bu dönemde kayıt yok.</div>`}</section>`;
+}
+/* proformalar: kullanıcıya ya da aşamaya göre gruplu */
+function audQuotes(D, people) {
+  const A = S.audit, byStage = A.group === "stage", list = [...D.quotes].sort((a, b) => audCreated(b) - audCreated(a));
+  const groups = byStage ? STAGES.map(st => ({k: "s:" + st.k, cls: "st-" + st.k, label: st.l, desc: st.d, items: list.filter(x => stageOf(x) === st.k)}))
+    : [...new Set(list.map(x => x.owner))].map(id => ({k: "u:" + id, cls: "st-all", label: (people.get(id) || {}).email || "—", desc: "", items: list.filter(x => x.owner === id)})).sort((a, b) => b.items.length - a.items.length);
+  const row = x => { const open = A.open.has(x.id), log = (Array.isArray(x.stageLog) ? x.stageLog : []).filter(e => e && STAGE_BY[e.k]);
+    return `<tr class="row"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no || "—")}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")} · ${brandOf(x)} · ${langOf(x).toUpperCase()}</span></td>
+      <td><b>${esc(x.buyer || "—")}</b><span class="sub">${esc([x.city, x.country].filter(Boolean).join(", ") || x.sellerName || "")}</span></td>
+      <td>${byStage ? personCell(people.get(x.owner)) : `${stageTag(x)}<span class="sub">${x.stageAt ? relTime(Number(x.stageAt)) + " güncellendi" : ""}</span>`}</td>
+      <td class="c k-col"><span class="tag blue">${x.itemCount || 0} kalem</span></td><td class="r strong">${money(x.total, x.currency)}</td>
+      <td class="num k-col">${fmtTs(new Date(audCreated(x)).toISOString())}</td>
+      <td><button class="btn sm" data-act="aud-open" data-id="${esc(x.id)}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button></td></tr>
+      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Oluşturan", esc((people.get(x.owner) || {}).email || "—"))}${kv("Firma", esc(x.sellerName || "—"))}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Oluşturma", fmtTs(new Date(audCreated(x)).toISOString()))}${kv("Son değişiklik", fmtTs(x.rowAt))}
+        ${log.length ? `<div class="kv wide"><span>Aşama geçmişi</span><b>${log.map(e => `${esc(STAGE_BY[e.k].l)} <span class="muted">${e.at ? fmtTs(new Date(e.at).toISOString()) : ""}</span>`).join(" → ")}</b></div>` : ""}</div></td></tr>` : ""}`; };
+  const body = groups.filter(g => g.items.length).map(g => { const coll = A.coll.has(g.k);
+    return `<tbody class="grp ${g.cls}"><tr class="grp-h"><th colspan="8"><button data-act="aud-grp" data-k="${esc(g.k)}" aria-expanded="${!coll}"><span class="chev">${ICON.chev}</span><i class="dot" aria-hidden="true"></i><b>${esc(g.label)}</b><span class="cnt">${g.items.length}</span><span class="sum num">${byCurText(sumByCur(g.items))}</span>${g.desc ? `<span class="grp-d">${esc(g.desc)}</span>` : ""}</button></th></tr>${coll ? "" : g.items.map(row).join("")}</tbody>`; }).join("");
+  return `<section class="card"><div class="card-h"><h2 class="ttl">Proformalar</h2><span class="muted small">Seçili dönemde oluşturulan ${list.length} proforma</span>
+      <div class="acts"><div class="seg sm" role="group" aria-label="Gruplama"><button data-act="aud-group" data-v="user" aria-pressed="${!byStage}">${ICON.users} Kullanıcıya göre</button><button data-act="aud-group" data-v="stage" aria-pressed="${byStage}">${ICON.stack} Aşamaya göre</button></div></div></div>
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl qtbl aud"><thead><tr><th class="d-col">Tarih</th><th>No</th><th>Alıcı</th><th>${byStage ? "Oluşturan" : "Aşama"}</th><th class="c k-col">Kalem</th><th class="r">Tutar</th><th class="k-col">Oluşturma</th><th></th></tr></thead>${body}</table></div>` : `<div class="empty">Bu dönemde oluşturulmuş proforma yok.</div>`}</section>`;
+}
+/* oturumlar: giriş ya da açılış zamanı, son etkinlik, açık kalma ve etkin kullanım süresi, cihaz */
+function audSessions(D, people) {
+  const A = S.audit, now = Date.now(), n = AUD_PAGE * (A.more + 1), list = D.sessions.slice(0, n);
+  const rows = list.map(s => { const st = tsMs(s.started_at), ls = tsMs(s.last_seen), on = now - ls < ONLINE_MS;
+    return `<tr class="row"><td>${personCell(people.get(s.user_id) || {email: s.email})}</td>
+      <td class="num">${fmtTs(s.started_at)}<span class="sub">${s.kind === "login" ? "Şifreyle giriş" : "Açık oturumla açtı"}</span></td>
+      <td class="num">${on ? `<span class="online"><i aria-hidden="true"></i>Şu an çevrimiçi</span>` : fmtTs(s.last_seen)}</td>
+      <td class="num">${fmtDur((ls - st) / 1000)}</td><td class="num"><b>${fmtDur(s.active_secs)}</b></td><td>${esc(uaShort(s.device))}</td></tr>`; }).join("");
+  return `<section class="card"><div class="card-h"><h2 class="ttl">Oturumlar</h2><span class="muted small">${D.sessions.length} oturum · etkin kullanım, sekme öndeyken ve son 5 dakikada etkileşim varken geçen süredir</span></div>
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl aud"><thead><tr><th>Kullanıcı</th><th>Başlangıç</th><th>Son etkinlik</th><th>Açık kalma</th><th>Etkin kullanım</th><th>Cihaz</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${D.sessions.length > n ? `<div class="more"><button class="btn" data-act="aud-more">Daha fazla göster (${D.sessions.length - n})</button></div>` : ""}` : `<div class="empty">Bu dönemde oturum yok. Kullanım kayıtları bu sürümle başlar; önceki kullanım geriye dönük görünmez.</div>`}</section>`;
+}
+function audText(e) {
+  const d = e.detail || {}, L = `<b>${esc(e.label || "—")}</b>`, verb = {create: "ekledi", update: "düzenledi", delete: "sildi"}[String(e.action).split("_")[1]] || "";
+  const amt = (v, c) => (v == null || v === "" ? "" : money(v, c));
+  switch (e.action) {
+    case "login": return `Giriş yaptı${d.ua ? ` <span class="muted">· ${esc(uaShort(d.ua))}</span>` : ""}`;
+    case "quote_create": return `${L} proformasını oluşturdu${d.buyer ? " · " + esc(d.buyer) : ""}${d.total != null ? " · " + amt(d.total, d.currency) : ""}`;
+    case "quote_update": return `${L} proformasını düzenledi${d.prevTotal != null && d.total != null && Number(d.prevTotal) !== Number(d.total) ? ` · tutar ${amt(d.prevTotal, d.currency)} → ${amt(d.total, d.currency)}` : ""}`;
+    case "quote_stage": return `${L} aşamasını değiştirdi: ${esc(stageName(d.from))} → <b>${esc(stageName(d.to))}</b>`;
+    case "quote_delete": return `${L} proformasını <b class="red-t">sildi</b>${d.buyer ? " · " + esc(d.buyer) : ""}${d.total != null ? " · " + amt(d.total, d.currency) : ""}`;
+    case "pdf": return `${L} proformasının PDF'ini indirdi`;
+    case "xlsx": return `${L} proformasının Excel dosyasını indirdi`;
+    case "customer_create": case "customer_update": case "customer_delete": return `${L} cari kartını ${verb}`;
+    case "product_create": case "product_update": case "product_delete": return `${L} ürününü ${verb}`;
+    case "company_create": case "company_update": case "company_delete": return `${L} firma kaydını ${verb}`;
+    case "user_status": return `${L} hesabını ${d.to === "suspended" ? "dondurdu" : d.from === "pending" ? "onayladı" : "yeniden aktif etti"}`;
+    case "user_password": return `${L} hesabına geçici şifre verdi`;
+    case "user_delete": return `${L} hesabını sildi${d.quotes ? ` · ${d.quotes} proformasıyla birlikte` : ""}`;
+    default: return esc(e.action);
+  }
+}
+function audLog(D, people) {
+  const A = S.audit, all = D.log.filter(e => !A.cat || audCat(e.action) === A.cat), n = AUD_PAGE * (A.more + 1), list = all.slice(0, n);
+  const rows = list.map(e => `<tr class="row"><td class="num">${fmtTs(e.at)}<span class="sub">${relTime(tsMs(e.at))}</span></td><td>${personCell(people.get(e.user_id) || {email: e.email || "Sistem"})}</td><td>${audText(e)}</td></tr>`).join("");
+  return `<section class="card"><div class="card-h"><h2 class="ttl">İşlem geçmişi</h2><span class="muted small">${all.length} kayıt</span></div>
+    <div class="chips aud-cats" role="group" aria-label="İşlem türü">${AUD_CATS.map(([k, l]) => `<button class="chip" data-act="aud-cat" data-v="${k}" aria-pressed="${A.cat === k}">${l} <span class="muted">${k ? D.log.filter(e => audCat(e.action) === k).length : D.log.length}</span></button>`).join("")}</div>
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl aud"><thead><tr><th>Zaman</th><th>Kullanıcı</th><th>İşlem</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${all.length > n ? `<div class="more"><button class="btn" data-act="aud-more">Daha fazla göster (${all.length - n})</button></div>` : ""}` : `<div class="empty">Bu dönemde bu türde işlem yok. İşlem kayıtları bu sürümle başlar; önceki işlemler geriye dönük görünmez.</div>`}</section>`;
 }
 
 function annAdmin() {
@@ -1144,6 +1350,7 @@ async function makeFile(kind, src, btn) {
       blob = new Blob([await wb.xlsx.writeBuffer()], {type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     }
     saveBlob(blob, safeName([q.no, q.buyer].filter(Boolean).join(" ") || "proforma") + (kind === "pdf" ? ".pdf" : ".xlsx"));
+    Store.rpc("audit_event", {p_action: kind === "pdf" ? "pdf" : "xlsx", p_target: q.id, p_label: q.no || "", p_detail: {buyer: q.buyer, brand: brandOf(q), lang: langOf(q)}}).catch(() => {});
     toast((kind === "pdf" ? "PDF" : "Excel") + " indirildi");
   } catch (e) { toastErr((kind === "pdf" ? "PDF" : "Excel") + " oluşturulamadı: " + ((e && e.message) || e)); }
   finally { S.busy = false; busy(btn, false); }
@@ -1280,14 +1487,14 @@ document.addEventListener("submit", async e => {
     if (n > 0) { busy(btn, false); const leak = f.querySelector(".pwreq .leak"); if (leak) leak.classList.add("bad"); return setErr(`Bu şifre bilinen veri sızıntılarında ${n.toLocaleString("tr-TR")} kez görülmüş; Chrome'un uyardığı durum budur. Başka bir yerde kullanmadığınız yeni bir şifre seçin.`); }
   }
   try {
-    if (kind === "login") { await Store.signIn(email, pw); if (!S.user) { const u = await Store.session(); if (u) await enter(u); } }
-    else if (kind === "signup") { const r = await Store.signUp(email, pw); S.authEmail = email; if (r.confirm) { S.auth = "confirm"; renderAuth(); } }
+    if (kind === "login") { S.loginKind = "login"; await Store.signIn(email, pw); if (!S.user) { const u = await Store.session(); if (u) await enter(u); } }
+    else if (kind === "signup") { S.loginKind = "login"; const r = await Store.signUp(email, pw); S.authEmail = email; if (r.confirm) { S.auth = "confirm"; renderAuth(); } }
     else if (kind === "reset") { await Store.reset(email); S.authEmail = email; S.auth = "sent"; renderAuth(); }
-    else if (kind === "recovery") { await Store.setPassword(pw); S.auth = "login"; toast("Şifreniz güncellendi"); history.replaceState(null, "", location.pathname + "#proforma"); const u = await Store.session(); if (u) await enter(u); else renderAuth(); }
+    else if (kind === "recovery") { S.loginKind = "login"; await Store.setPassword(pw); S.auth = "login"; toast("Şifreniz güncellendi"); history.replaceState(null, "", location.pathname + "#proforma"); const u = await Store.session(); if (u) await enter(u); else renderAuth(); }
     else if (kind === "pwchange") { await Store.setPassword(pw); f.reset(); toast("Şifreniz değiştirildi"); }
     else if (kind === "forcepw") { await Store.setPassword(pw); toast("Yeni şifreniz kaydedildi"); const u = S.user; if (u) await enter(u); }
     else if (kind === "adminpw") { const u = (S.admin.users || []).find(x => x.id === f.dataset.id); await Store.rpc("admin_set_password", {target: f.dataset.id, new_password: pw}); $("confirm").hidden = true; toast((u ? u.email : "Kullanıcı") + " için geçici şifre kaydedildi; ilk girişte değiştirmesi istenecek"); loadUsers(); }
-  } catch (x) { setErr(authError(x)); }
+  } catch (x) { S.loginKind = ""; setErr(authError(x)); }
   finally { busy(btn, false); }
 });
 document.addEventListener("keydown", e => {
@@ -1413,6 +1620,17 @@ document.addEventListener("click", async e => {
       ask({title: "Duyuru silinsin mi?", msg: `<b>${esc(a.title)}</b> kalıcı olarak silinir.`, yes: "Sil", danger: true, fn: async () => { try { await Store.delAnn(a.id); await refreshAnn(); toast("Duyuru silindi"); } catch (err) { toastErr(authError(err)); } }}); break; }
     case "cari-open": { const c = cariById(b.dataset.id); if (!c) break; S.cari.sel = c.id; S.cariEdit = {...c}; go("alicilar"); break; }
     case "adm-filter": S.admin.filter = b.dataset.f; renderMain(); break;
+    case "adm-tab": { const v = b.dataset.v; if (!ADM_TABS.some(t => t[0] === v) || v === S.admin.tab) break; S.admin.tab = v; lsSet("ndl-admtab", v); keepFocus(b, renderMain); break; }
+    /* denetim */
+    case "aud-refresh": loadAudit(); break;
+    case "aud-period": { const v = b.dataset.v; if (v === S.audit.period || S.audit.loading) break; S.audit.period = v; S.audit.more = 0; loadAudit(); break; }
+    case "aud-view": S.audit.view = b.dataset.v; S.audit.more = 0; keepFocus(b, renderMain); break;
+    case "aud-user": { const v = b.dataset.id || ""; S.audit.user = S.audit.user === v ? "" : v; S.audit.more = 0; renderMain(); break; }
+    case "aud-group": S.audit.group = b.dataset.v === "stage" ? "stage" : "user"; keepFocus(b, renderMain); break;
+    case "aud-grp": { const k = b.dataset.k; if (S.audit.coll.has(k)) S.audit.coll.delete(k); else S.audit.coll.add(k); keepFocus(b, renderMain); break; }
+    case "aud-cat": S.audit.cat = b.dataset.v; S.audit.more = 0; keepFocus(b, renderMain); break;
+    case "aud-more": S.audit.more++; renderMain(); break;
+    case "aud-open": { const id = b.dataset.id; if (S.audit.open.has(id)) S.audit.open.delete(id); else S.audit.open.add(id); keepFocus(b, renderMain); break; }
     case "adm-approve": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) adminAction("admin_set_status", {target: u.id, new_status: "active"}, u.email + " onaylandı"); break; }
     case "adm-unfreeze": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (u) adminAction("admin_set_status", {target: u.id, new_status: "active"}, u.email + " yeniden aktif"); break; }
     case "adm-freeze": { const u = (S.admin.users || []).find(x => x.id === b.dataset.id); if (!u) break;
