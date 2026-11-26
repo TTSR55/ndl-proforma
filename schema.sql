@@ -6,6 +6,7 @@
 --            product = ürün kütüphanesi, settings = firma ve banka bilgileri.
 -- profiles : her hesabın rolü (user / admin) ve durumu (pending = onay bekliyor, active, suspended = donduruldu).
 -- audit_log, app_sessions : denetim (girişler, kullanım süresi, işlem geçmişi); yalnızca yönetici okur (bkz. 9).
+-- profiles ayrıca ad, soyad, unvan, telefon ve fotoğrafı tutar (bkz. 10); proformada "Hazırlayan" bu addır.
 -- Yeni kayıtlar "pending" başlar; yönetici onaylayana kadar hiçbir veriye erişemez. Dondurulan hesap giriş yapamaz.
 
 -- 1) Kullanıcı verileri ------------------------------------------------------------------------------
@@ -40,6 +41,16 @@ create table if not exists public.profiles (
 alter table public.profiles enable row level security;
 -- yönetici geçici şifre verdiğinde true: kullanıcı ilk girişte yeni şifre belirlemeden devam edemez
 alter table public.profiles add column if not exists must_change boolean not null default false;
+-- profil: ad, soyad, unvan, telefon ve fotoğraf (bkz. 10)
+alter table public.profiles add column if not exists first_name text;
+alter table public.profiles add column if not exists last_name  text;
+alter table public.profiles add column if not exists title      text;
+alter table public.profiles add column if not exists phone      text;
+alter table public.profiles add column if not exists avatar     text;
+alter table public.profiles add column if not exists updated_at timestamptz;
+alter table public.profiles drop constraint if exists profiles_fields_len;
+alter table public.profiles add constraint profiles_fields_len check (
+  char_length(first_name) <= 60 and char_length(last_name) <= 60 and char_length(title) <= 80 and char_length(phone) <= 40 and char_length(avatar) <= 200000);
 
 -- 3) Yardımcı fonksiyonlar (security definer: profilleri kuralların dışında okur; arama yolu boş) -------
 --    Geçici şifre bekleyen hesap (must_change) yeni şifresini belirleyene kadar veriye erişemez. Böylece
@@ -57,7 +68,10 @@ $$;
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
-  insert into public.profiles (id, email) values (new.id, new.email) on conflict (id) do nothing;
+  -- kayıt formundaki ad ve soyad (bkz. 10) profile yazılır
+  insert into public.profiles (id, email, first_name, last_name)
+  values (new.id, new.email, left(nullif(btrim(new.raw_user_meta_data->>'first_name'), ''), 60), left(nullif(btrim(new.raw_user_meta_data->>'last_name'), ''), 60))
+  on conflict (id) do nothing;
   return new;
 end $$;
 drop trigger if exists ndl_on_auth_user_created on auth.users;
@@ -239,10 +253,12 @@ on conflict (year) do update set last = greatest(public.quote_counters.last, exc
 drop function if exists public.admin_list_users();
 create or replace function public.admin_list_users()
 returns table (id uuid, email text, role text, status text, created_at timestamptz, last_sign_in_at timestamptz,
-               email_confirmed_at timestamptz, decided_at timestamptz, doc_count bigint, must_change boolean)
+               email_confirmed_at timestamptz, decided_at timestamptz, doc_count bigint, must_change boolean,
+               first_name text, last_name text, title text, phone text, avatar text)
 language sql stable security definer set search_path = '' as $$
   select p.id, p.email, p.role, p.status, p.created_at, u.last_sign_in_at, u.email_confirmed_at, p.decided_at,
-         (select count(*) from public.docs d where d.user_id = p.id), p.must_change
+         (select count(*) from public.docs d where d.user_id = p.id), p.must_change,
+         p.first_name, p.last_name, p.title, p.phone, p.avatar
     from public.profiles p left join auth.users u on u.id = p.id
    where public.is_admin()
    order by (p.status = 'pending') desc, p.created_at desc;
@@ -523,3 +539,34 @@ grant execute on function public.audit_event(text, text, text, jsonb) to authent
 grant execute on function public.admin_audit_quotes() to authenticated;
 grant execute on function public.admin_audit_sessions(timestamptz) to authenticated;
 grant execute on function public.admin_audit_log(timestamptz, integer) to authenticated;
+
+-- 10) Profil: ad, soyad, unvan, telefon ve fotoğraf -----------------------------------------------------
+--     Her hesap adını ve soyadını girer; proformalarda "Hazırlayan" olarak bu ad basılır (kullanıcı isterse gizler).
+--     Kullanıcı yalnızca kendi profilini update_my_profile ile değiştirir; rol, durum ve e-posta alanlarına dokunamaz.
+--     Fotoğraf küçültülmüş bir görsel (data: URL, en fazla ~200 KB) olarak saklanır.
+--     Profil sütunları (ad, soyad, unvan, telefon, fotoğraf) 2. bölümde tanımlanır.
+
+create or replace function public.update_my_profile(p_first text, p_last text, p_title text default null, p_phone text default null,
+                                                    p_avatar text default null, p_set_avatar boolean default false)
+returns void language plpgsql security definer set search_path = '' as $$
+declare f text := btrim(coalesce(p_first, '')); l text := btrim(coalesce(p_last, ''));
+        ti text := nullif(btrim(coalesce(p_title, '')), ''); ph text := nullif(btrim(coalesce(p_phone, '')), '');
+begin
+  if auth.uid() is null then raise exception 'not_signed_in' using errcode = '42501'; end if;
+  if char_length(f) not between 2 and 60 or char_length(l) not between 2 and 60 then raise exception 'name_required' using errcode = '22023'; end if;
+  if char_length(ti) > 80 then raise exception 'bad_title' using errcode = '22023'; end if;
+  if ph is not null and (char_length(ph) > 40 or ph !~ '^[0-9+(). /-]+$') then raise exception 'bad_phone' using errcode = '22023'; end if;
+  if p_set_avatar and p_avatar is not null and (char_length(p_avatar) > 200000 or p_avatar !~ '^data:image/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$') then
+    raise exception 'bad_avatar' using errcode = '22023'; end if;
+  update public.profiles
+     set first_name = f, last_name = l, title = ti, phone = ph,
+         avatar = case when p_set_avatar then p_avatar else avatar end, updated_at = now()
+   where id = auth.uid();
+  if not found then raise exception 'no_user' using errcode = 'P0002'; end if;
+  perform public.audit_add(auth.uid(), 'profile_update', 'user', auth.uid()::text, f || ' ' || l, jsonb_build_object('avatar', p_set_avatar));
+end $$;
+revoke all on function public.update_my_profile(text, text, text, text, text, boolean) from public, anon;
+grant execute on function public.update_my_profile(text, text, text, text, text, boolean) to authenticated;
+-- admin_list_users yeniden tanımlandığı için yetkisi yeniden verilir
+revoke all on function public.admin_list_users() from public, anon;
+grant execute on function public.admin_list_users() to authenticated;

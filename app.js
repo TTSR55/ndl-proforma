@@ -43,6 +43,7 @@ const ICON = {
   bell: I('<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>'),
   key: I('<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L20 3M16 7l2.5 2.5M14 9l2 2"/>'),
   chev: I('<path d="M6 9l6 6 6-6"/>'), clock: I('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+  user: I('<circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.7 3.6-5.7 7-5.7s6.2 2 7 5.7"/>'),
   shield: I('<path d="M12 3l7.5 3v6c0 4.5-3.2 7.7-7.5 9-4.3-1.3-7.5-4.5-7.5-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>')
 };
 const kv = (k, v, cls = "") => `<div class="kv"><span>${esc(k)}</span><b class="${cls}">${v}</b></div>`;
@@ -158,6 +159,10 @@ async function enter(u) {
   catch (e) { S.entering = false; if (isMissingTable(e)) renderSetupNeeded(); else renderFatal("Hesap bilgileriniz okunamadı: " + authError(e), true); return; }
   if (!prof || prof.status !== "active") { S.entering = false; renderGate(prof); return; }
   if (prof.must_change) { S.entering = false; renderForcePw(); return; }
+  S.me = prof;
+  /* her hesabın adı ve soyadı olmalı (proformada "Hazırlayan"); profil sütunları kuruluysa ve eksikse önce tamamlanır */
+  if ("first_name" in prof && !hasName(prof)) { S.entering = false; renderNameGate(); return; }
+  PREP_DEF = lsGet("ndl-showprep") !== "0";
   S.role = prof.role === "admin" ? "admin" : "user"; S.qView = lsGet("ndl-qview") === "list" ? "list" : "group";
   S.admin.tab = ADM_TABS.some(t => t[0] === lsGet("ndl-admtab")) ? lsGet("ndl-admtab") : "users";
   S.lib.brand = BRANDS.includes(lsGet("ndl-libbrand")) ? lsGet("ndl-libbrand") : "NDL"; BRAND_DEF = lastBrand();
@@ -194,6 +199,17 @@ function renderForcePw() {
     <button class="link" data-act="logout">Çıkış yap</button></div></div>`;
   const f = $("f_pw"); if (f) f.focus();
 }
+function renderNameGate() {
+  const m = S.me || {};
+  root.innerHTML = `<div class="auth-main" style="min-height:100%"><div class="auth-card"><div><div class="eyebrow soft">${esc(S.user ? S.user.email : "")}</div><h1>Adınızı ve soyadınızı girin</h1></div>
+    <p class="lead">Proformalarda “Hazırlayan” olarak adınız ve soyadınız basılır. Bir kez girmeniz yeterli; sonradan Hesap ayarlarından değiştirebilirsiniz.</p>
+    <form class="auth-form" data-form="namegate" novalidate><div class="two">${nameFields("g", m)}</div>
+    <div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">${ICON.check} Kaydet ve devam et</button></form>
+    <button class="link" data-act="logout">Çıkış yap</button></div></div>`;
+  const f = $("g_first"); if (f) f.focus();
+}
+const nameFields = (px, v, attr = "") => `<div class="fld"><label for="${px}_first">Ad</label><input id="${px}_first" name="first_name" autocomplete="given-name" maxlength="60" required value="${esc((v && v.first_name) || "")}"${attr ? attr.replace("%", "first_name") : ""}></div>
+  <div class="fld"><label for="${px}_last">Soyad</label><input id="${px}_last" name="last_name" autocomplete="family-name" maxlength="60" required value="${esc((v && v.last_name) || "")}"${attr ? attr.replace("%", "last_name") : ""}></div>`;
 function renderGate(prof) {
   const st = prof ? prof.status : "pending", susp = st === "suspended";
   root.innerHTML = `<div class="auth-main" style="min-height:100%"><div class="auth-card"><div class="sent"><span class="bubble${susp ? " red" : ""}">${susp ? ICON.lock : ICON.shield}</span>
@@ -202,7 +218,7 @@ function renderGate(prof) {
     <div class="row-between" style="width:100%;margin-top:6px">${susp ? "<span></span>" : `<button class="btn blue" data-act="gate-check">${ICON.check} Tekrar kontrol et</button>`}<button class="btn" data-act="logout">${ICON.out} Çıkış yap</button></div></div></div></div>`;
 }
 function leave() {
-  usageStop(true);
+  usageStop(true); S.me = null; S.acct = null;
   /* önceki hesabın "Geri al" bildirimi bir sonraki girişte kalmasın */
   clearTimeout(toast._t); S.undo = null; const tt = $("toast"); if (tt) { tt.hidden = true; tt.innerHTML = ""; }
   Object.assign(S, {user: null, role: "user", pendingCount: 0, products: [], companies: [], settings: {}, quotes: [], customers: [], q: null, cfg: null, firm: null, menu: null, auth: "login", cariEdit: null});
@@ -334,7 +350,7 @@ function pwField(id, name, label, ac, extra = "", rules = false) {
 const emailField = v => `<div class="fld"><label for="a_email">E-posta</label><div class="ico-in">${ICON.mail}<input id="a_email" name="email" type="email" autocomplete="email" required value="${esc(v || S.authEmail)}" placeholder="ad@firma.com"></div></div>`;
 function authBody(m) {
   if (m === "signup") return `<div><div class="eyebrow soft">Yeni hesap</div><h1>Hesap oluşturun</h1></div><p class="lead">E-posta ve şifrenizle bir hesap açın. Proformalarınız, alıcılarınız ve ürün kütüphaneniz bu hesaba özel tutulur.</p>
-    <form class="auth-form" data-form="signup" novalidate>${emailField()}${pwField("a_pw", "password", "Şifre", "new-password", "", true)}${pwField("a_pw2", "password2", "Şifre (tekrar)", "new-password")}
+    <form class="auth-form" data-form="signup" novalidate><div class="two">${nameFields("a", S.signupName)}</div>${emailField()}${pwField("a_pw", "password", "Şifre", "new-password", "", true)}${pwField("a_pw2", "password2", "Şifre (tekrar)", "new-password")}
     <div class="form-err" role="alert"></div><button class="btn blue wide" type="submit">Hesap oluştur</button></form>
     <p class="auth-alt">Hesabınız var mı? <button class="link" data-act="auth" data-m="login">Giriş yapın</button></p>`;
   if (m === "reset") return `<div><div class="eyebrow soft">Şifre</div><h1>Şifremi unuttum</h1></div><p class="lead">Hesabınızın e-posta adresini yazın; şifre yenileme bağlantısı gönderelim.</p>
@@ -358,17 +374,26 @@ function renderShell() {
   root.innerHTML = `<button class="skip" data-act="skip">İçeriğe geç</button><div class="app"><header class="top" id="top"></header><nav class="side" id="side" aria-label="Menü"></nav><main class="main" id="main"></main></div>`;
   renderTop(); renderSide();
 }
-function initials() { const e = (S.user && S.user.email) || "?"; const n = e.split("@")[0].split(/[._-]+/).filter(Boolean); return ((n[0] || "?")[0] + ((n[1] || "")[0] || "")).toUpperCase(); }
+/* ---------- profil ---------- */
+const nameOf = p => [p && p.first_name, p && p.last_name].map(v => String(v || "").trim()).filter(Boolean).join(" ");
+const hasName = p => !!(p && String(p.first_name || "").trim().length >= 2 && String(p.last_name || "").trim().length >= 2);
+function initialsOf(p, email) {
+  const n = nameOf(p); if (n) { const w = n.split(/\s+/); return ((w[0] || "?")[0] + (w.length > 1 ? w[w.length - 1][0] : "")).toLocaleUpperCase("tr"); }
+  const e = email || (p && p.email) || "?", k = e.split("@")[0].split(/[._-]+/).filter(Boolean); return ((k[0] || "?")[0] + ((k[1] || "")[0] || "")).toUpperCase();
+}
+const initials = () => initialsOf(S.me, S.user && S.user.email);
+const avatarHtml = (p, cls, email) => `<span class="av ${cls}" aria-hidden="true">${p && p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : esc(initialsOf(p, email))}</span>`;
+const acctBuf = () => { const m = S.me || {}; return {first_name: m.first_name || "", last_name: m.last_name || "", title: m.title || "", phone: m.phone || ""}; };
 function renderTop() {
   const t = $("top"); if (!t) return;
-  t.innerHTML = `<a class="brand" href="#proforma"><img src="ndl.jpg" alt="NDL"><span>NDL PROFORMA</span></a>
+  t.innerHTML = `<a class="brand" href="#pano" title="Pano"><img src="ndl.jpg" alt="NDL"><span>NDL PROFORMA</span></a>
    <label class="gsearch">${ICON.search}<input id="gSearch" type="search" placeholder="Proforma no, firma veya ülke ara" value="${esc(S.qSearch)}" autocomplete="off" aria-label="Proformalarda ara"></label>
    <div class="top-r">
-     <a class="cart" href="#proforma" title="Açık proforma"><span class="ic">${ICON.doc}<i id="cartCount">${S.q.items.length}</i></span><span>Toplam: <b id="cartTotal">${money(qTotal(S.q), S.q.currency)}</b></span></a>
+     <div class="dmenu"><button class="cart" data-act="draft" aria-haspopup="dialog" aria-expanded="${S.menu === "draft"}" aria-controls="draftPop" aria-label="${esc(cartLabel())}">${cartInner()}</button>${S.menu === "draft" ? draftPop() : ""}</div>
      <button class="round" data-act="theme" title="${isDark() ? "Açık tema" : "Koyu tema"}" aria-label="Temayı değiştir">${isDark() ? ICON.sun : ICON.moon}</button>
-     <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü${S.role === "admin" && S.pendingCount ? ` · ${S.pendingCount} onay bekleyen` : ""}">${esc(initials())}${S.role === "admin" && S.pendingCount ? `<i class="abadge" aria-hidden="true">${S.pendingCount}</i>` : ""}</button>
-       ${S.menu === "user" ? `<div class="pop" role="menu"><div class="who"><b>${esc(S.user.email)}</b><span>${Store.mode === "demo" ? "Demo hesabı · bu tarayıcıda" : "Kayıtlarınız yalnızca bu hesapta"}</span></div>
-         <a href="#pano" role="menuitem">${ICON.key} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firmalar</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
+     <div class="umenu"><button class="avatar" data-act="umenu" aria-expanded="${S.menu === "user"}" aria-label="Hesap menüsü${S.role === "admin" && S.pendingCount ? ` · ${S.pendingCount} onay bekleyen` : ""}">${S.me && S.me.avatar ? `<img src="${esc(S.me.avatar)}" alt="">` : esc(initials())}${S.role === "admin" && S.pendingCount ? `<i class="abadge" aria-hidden="true">${S.pendingCount}</i>` : ""}</button>
+       ${S.menu === "user" ? `<div class="pop" role="menu"><div class="who">${avatarHtml(S.me, "sm", S.user.email)}<div><b>${esc(nameOf(S.me) || S.user.email)}</b><span>${nameOf(S.me) ? esc(S.user.email) : Store.mode === "demo" ? "Demo hesabı · bu tarayıcıda" : "Kayıtlarınız yalnızca bu hesapta"}</span></div></div>
+         <a href="#hesap" role="menuitem">${ICON.user} Hesap ayarları</a><a href="#firma" role="menuitem">${ICON.firm} Firmalar</a><a href="#proformalar" role="menuitem">${ICON.stack} Proformalarım</a>${S.role === "admin" ? `<a href="#yonetim" role="menuitem">${ICON.shield} Kullanıcı yönetimi${S.pendingCount ? ` · ${S.pendingCount} onay bekliyor` : ""}</a>` : ""}
          <button class="danger" data-act="logout" role="menuitem">${ICON.out} Çıkış yap</button></div>` : ""}</div>
    </div>`;
 }
@@ -378,10 +403,44 @@ function renderSide() {
   s.innerHTML = nav.map(([v, l, ic]) => `<a href="#${v}" data-v="${v}"${S.view === v ? ' aria-current="page"' : ""}>${ICON[ic]}<span>${l}</span>${v === "yonetim" && S.pendingCount ? `<i class="nbadge" aria-label="${S.pendingCount} onay bekleyen">${S.pendingCount}</i>` : ""}</a>`).join("")
     + `<span class="grow"></span>${Store.mode === "demo" ? `<span class="mode">Demo</span>` : ""}`;
 }
+/* ---------- taslak özeti ----------
+   Üst çubuktaki düğme, oluşturulmamış (ya da kaydedilmemiş değişikliği olan) son proformanın özetini açar.
+   Proforma oluşturulunca taslak sıfırlanır: düğme "Taslak yok" der. */
+const draftOf = () => { const q = S.q; return q && !isBlank(q) && (!q.saved || q.dirty) ? q : null; };
+const cartLabel = () => { const d = draftOf(); return d ? `Taslak proforma: ${d.items.length} kalem, toplam ${money(qTotal(d), d.currency)}` : "Taslak proforma yok"; };
+function cartInner() {
+  const d = draftOf(), n = d ? d.items.length : 0;
+  return `<span class="ic">${ICON.doc}${n ? `<i id="cartCount">${n}</i>` : ""}</span><span class="ct">${d ? `Toplam: <b id="cartTotal">${money(qTotal(d), d.currency)}</b>` : "Taslak yok"}</span>`;
+}
+const DRAFT_STEPS = ["Firma ve Cari Kart", "Ürün Ekle", "Önizle ve Oluştur"];
+function draftPop() {
+  const d = draftOf(), head = (title, tag) => `<div class="dp-h"><div><h2 id="dpT">${title}</h2>${tag || ""}</div><button class="ibtn" data-act="draft-close" aria-label="Taslak özetini kapat">${ICON.x}</button></div>`;
+  if (!d) return `<div class="dpop" id="draftPop" role="dialog" aria-labelledby="dpT" tabindex="-1">${head("Taslak proforma")}
+    <div class="dp-empty"><span class="dp-ic">${ICON.doc}</span><b>Bekleyen taslak yok</b><span>Oluşturulan proformalar taslaktan çıkar ve Kayıtlar'da saklanır. Yeni bir proforma hazırladıkça özeti burada görünür.</span>
+      <div class="dp-eb"><button class="btn blue sm" data-act="draft-new">${ICON.plus} Yeni proforma</button><a class="btn sm" href="#proformalar" data-act="draft-close">${ICON.stack} Kayıtlar</a></div></div></div>`;
+  const st = d.sample ? ["amber", "Örnek şablon"] : d.saved ? ["amber", "Kaydedilmemiş değişiklik"] : ["grey", "Oluşturulmadı"];
+  const seller = companyChosen(d) ? (sellerOf(d).company || coName(companyById(d.companyId))) : "", miss = d.items.filter(missingPrice).length, B = brandOf(d);
+  const li = it => { const inf = itemInfo(it, B), ph = itemPhotos(it).main;
+    return `<li><span class="dp-th">${ph ? `<img src="${esc(thumbOf(ph))}" alt="" loading="lazy">` : ICON.cube}</span><span class="dp-n"><b>${esc(inf.code)}</b><span>${esc(inf.name)}${it.opts.length ? ` · +${it.opts.length} opsiyon` : ""}</span></span>
+      <span class="dp-p">${missingPrice(it) ? `<span class="tag red">Fiyat eksik</span>` : `<b>${money(lineTotal(it), d.currency)}</b>`}<span>${esc(it.qty)} × ${money(unitPrice(it), d.currency)}</span></span></li>`; };
+  return `<div class="dpop" id="draftPop" role="dialog" aria-labelledby="dpT" tabindex="-1">${head(d.saved ? esc(d.no) + " · düzenleniyor" : "Taslak proforma", `<span class="tag ${st[0]}">${st[1]}</span>`)}
+    <dl class="dp-meta"><div><dt>Cari</dt><dd>${esc(d.buyer || "Seçilmedi")}</dd></div><div><dt>Firma</dt><dd>${esc(seller || "Seçilmedi")}</dd></div>
+      <div><dt>Marka · dil</dt><dd>${B} · ${LANG_BY[langOf(d)]}</dd></div><div><dt>Kaldığınız adım</dt><dd>${S.step}/3 · ${DRAFT_STEPS[S.step - 1] || ""}</dd></div></dl>
+    ${d.items.length ? `<ul class="dp-items">${d.items.slice(0, 4).map(li).join("")}</ul>${d.items.length > 4 ? `<p class="dp-more">+${d.items.length - 4} kalem daha</p>` : ""}` : `<p class="dp-none">Henüz kalem eklenmedi.</p>`}
+    ${miss ? `<p class="dp-warn">${ICON.alert} ${miss} kalemde fiyat eksik</p>` : ""}
+    <div class="dp-f"><div class="dp-tot"><span>Toplam · ${d.items.length} kalem</span><b>${money(qTotal(d), d.currency)}</b></div>
+      <div class="dp-fb"><button class="btn" data-act="draft-go" data-n="3">${ICON.eye} Önizle</button><button class="btn blue" data-act="draft-go" data-n="${S.step}">Devam et ${ICON.right}</button></div></div></div>`;
+}
 function updateCart() {
-  const c = $("cartCount"), t = $("cartTotal"), n = S.q.items.length;
-  if (c) { const was = Number(c.textContent) || 0; c.textContent = n; if (n > was) { c.classList.remove("bump"); void c.offsetWidth; c.classList.add("bump"); } }
-  if (t) t.textContent = money(qTotal(S.q), S.q.currency);
+  const b = document.querySelector(".cart"); if (!b) return;
+  const c0 = $("cartCount"), was = c0 ? Number(c0.textContent) || 0 : 0;
+  b.innerHTML = cartInner(); b.setAttribute("aria-label", cartLabel());
+  const c = $("cartCount"); if (c && Number(c.textContent) > was) c.classList.add("bump");
+  if (S.menu === "draft") { const p = $("draftPop"); if (p) p.outerHTML = draftPop(); }
+}
+function closeMenu(focusBack) {
+  const was = S.menu; S.menu = null; renderTop();
+  if (focusBack) { const t = document.querySelector(was === "draft" ? "#top .cart" : "#top .avatar"); if (t) t.focus(); }
 }
 /* yumuşak kaydırma yalnızca hareket azaltma istenmediğinde (stil dosyasındaki kural JavaScript kaydırmasına ulaşmaz) */
 const scrollMode = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
@@ -408,10 +467,10 @@ function focusHeading(sel) {
   if (!h.hasAttribute("tabindex")) h.setAttribute("tabindex", "-1");
   h.focus({preventScroll: true});
 }
-const viewTitle = () => { const n = NAV.find(x => x[0] === S.view); return (S.view === "yonetim" ? "Yönetim" : n ? n[1] : "") + (S.view === "proforma" && S.q ? ` · Adım ${S.step}/3` : ""); };
+const viewTitle = () => { const n = NAV.find(x => x[0] === S.view); return (S.view === "yonetim" ? "Yönetim" : S.view === "hesap" ? "Hesap ayarları" : n ? n[1] : "") + (S.view === "proforma" && S.q ? ` · Adım ${S.step}/3` : ""); };
 function renderMain() {
   const m = $("main"); if (!m) return;
-  keepFocus(m, () => { m.innerHTML = (S.view === "pano" ? pagePano() : S.view === "proformalar" ? pageQuotes() : S.view === "alicilar" ? pageCari() : S.view === "yonetim" ? pageAdmin() : S.view === "urunler" ? pageLib() : S.view === "firma" ? pageFirm() : pageProforma()).replace('<div class="page">', '<div class="page">' + annBar()); });
+  keepFocus(m, () => { m.innerHTML = (S.view === "pano" ? pagePano() : S.view === "proformalar" ? pageQuotes() : S.view === "alicilar" ? pageCari() : S.view === "yonetim" ? pageAdmin() : S.view === "urunler" ? pageLib() : S.view === "firma" ? pageFirm() : S.view === "hesap" ? pageAccount() : pageProforma()).replace('<div class="page">', '<div class="page">' + annBar()); });
   paperRO.disconnect(); const p = $("paper"); if (p) paperRO.observe(p); fitPaper();
   const vt = viewTitle(); document.title = (vt ? vt + " · " : "") + "NDL Proforma";
   syncInvalid(m);
@@ -648,6 +707,7 @@ function formReview() {
     <div class="fld"><label for="r_del">Teslim şekli</label><input id="r_del" data-q="delivery" list="dlDel" value="${esc(q.delivery)}"></div>
     <div class="fld"><label for="r_val">Geçerlilik süresi</label><input id="r_val" data-q="validity" list="dlVal" value="${esc(q.validity)}"></div>
     <div class="fld s2"><label for="r_dt">Sevkiyat süresi</label><input id="r_dt" data-q="dtime" list="dlDt" value="${esc(q.dtime)}"></div>
+    ${prepSwitch(q)}
     <p class="hint s4" style="margin:0">Şartları listeden seçebilir ya da serbestçe yazabilirsiniz. Listedeki şartlar dil değiştirilince kendiliğinden çevrilir; serbest yazılan metin olduğu gibi kalır.</p>
     ${hsField(q)}
    </div>
@@ -662,6 +722,12 @@ function formReview() {
      ${noTr ? chk("warn", `${noTr} kalemin Türkçe adı yok · İngilizce adıyla basılır${isAdmin() ? ` · <a href="#urunler">Ürünler</a>` : ""}`) : ""}</div>
    ${dlist("dlPay", termList("payment", lang))}${dlist("dlDel", DELIVERY)}${dlist("dlVal", termList("validity", lang))}${dlist("dlDt", termList("dtime", lang))}
    <div class="card-f"><button class="btn ghost" data-act="step" data-n="2">${ICON.left} Ürünler</button><div class="grow sum" style="text-align:right">${ok ? "Kayıtlı" : q.saved ? "Kaydedilmemiş değişiklik var" : "Oluşturunca sistem numarası verilir ve cari kartın kayıtlarına eklenir"}</div><div class="btns">${main}</div></div>`;
+}
+/* hazırlayan: hesap ayarlarındaki ad ve soyad; proformada gösterilip gösterilmeyeceği seçilir */
+function prepSwitch(q) {
+  const p = preparerOf(q), on = q.showPreparer !== false, lbl = OUT[langOf(q)].prep;
+  return `<div class="fld s4"><label class="switch"><input type="checkbox" role="switch" data-qb="showPreparer"${on ? " checked" : ""}${p ? "" : " disabled"}><span class="sw-t" aria-hidden="true"></span>
+    <span class="tx"><b>Hazırlayanı proformada göster</b><span>${p ? `${esc(prepText(p))} · ${on ? `“${lbl}” satırında basılır` : "proformada basılmaz, yalnızca kayıtta tutulur"}` : `Önce <a href="#hesap">Hesap ayarlarından</a> adınızı ve soyadınızı girin.`}</span></span></label></div>`;
 }
 /* HS kodları: birden çok kod; Enter, virgül ya da Ekle ile eklenir. Öneriler bu hesabın önceki proformalarından gelir. */
 function hsSuggest(q) {
@@ -790,7 +856,7 @@ function quoteRow(x) {
         <button class="ibtn" data-act="out" data-k="pdf" data-src="${x.id}" title="PDF indir" aria-label="PDF indir">${ICON.file}</button>
         <button class="ibtn" data-act="out" data-k="xlsx" data-src="${x.id}" title="Excel indir" aria-label="Excel indir">${ICON.grid}</button>
         <button class="ibtn danger" data-act="q-del" data-id="${x.id}" title="Sil" aria-label="Proformayı sil">${ICON.trash}</button></div></td></tr>
-    ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it, brandOf(x)).code + " · " + itemInfo(it, brandOf(x)).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Proforma dili", LANG_BY[langOf(x)])}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Sevkiyat", esc(x.dtime || "—"))}
+    ${open ? `<tr class="detail"><td colspan="7"><div class="detail-in">${items.map(it => kv(itemInfo(it, brandOf(x)).code + " · " + itemInfo(it, brandOf(x)).name, `${esc(it.qty)} × ${money(unitPrice(it), x.currency)} = ${money(lineTotal(it), x.currency)}`)).join("")}${kv("Hazırlayan", x.preparer ? esc(prepText(x.preparer)) + (x.showPreparer === false ? ' <span class="muted">· proformada gizli</span>' : "") : "—")}${kv("Proforma dili", LANG_BY[langOf(x)])}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Sevkiyat", esc(x.dtime || "—"))}
       ${kv("Geçerlilik süresi", esc(x.validity || "—") + (vu ? ` <span class="muted">· ${fmtDate(vu)} tarihine kadar</span>` : ""))}${kv("HS kodları", esc(hsText(x) || "—"))}
       ${log ? `<div class="kv wide"><span>Aşama geçmişi</span><b>${log}</b></div>` : ""}</div></td></tr>` : ""}`;
 }
@@ -852,8 +918,8 @@ function pagePano() {
   const models = Object.values(mAgg).sort((a, b) => b.qty - a.qty).slice(0, 5), mMax = Math.max(1, ...models.map(m => m.qty));
   const recent = [...S.quotes].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 5);
   const kpi = (label, value, sub) => `<div class="kpi card"><span class="k-l">${label}</span><b class="k-v num">${value}</b><span class="k-s">${sub}</span></div>`;
-  const name = (S.user.email || "").split("@")[0];
-  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Pano</div><h1>Hoş geldiniz${name ? ", " + esc(name) : ""}</h1><p class="lead">Proformalarınızın özeti, en çok çalıştığınız cariler ve hesap ayarlarınız.</p></div>
+  const name = (S.me && String(S.me.first_name || "").trim()) || (S.user.email || "").split("@")[0];
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Pano</div><h1>Hoş geldiniz${name ? ", " + esc(name) : ""}</h1><p class="lead">Proformalarınızın özeti, son proformalar ve en çok çalıştığınız cariler.</p></div>
      <button class="btn blue" data-act="new">${ICON.plus} Yeni Proforma</button></div>
    <div class="kpis">
      ${kpi("Proforma", S.quotes.length, `bu ay <b>${month.length}</b>`)}
@@ -873,8 +939,7 @@ function pagePano() {
      <section class="card"><div class="card-h"><h2 class="ttl">En çok çalışılan cariler</h2><div class="acts"><a class="btn ghost sm" href="#alicilar">Cari kartlar ${ICON.right}</a></div></div>
        ${cariAgg.length ? `<div class="tbl-wrap"><table class="tbl"><tbody>${cariAgg.map(a => `<tr class="row clk" data-act="cari-open" data-id="${esc(a.c.id)}"><td class="code num">${esc(a.c.code)}</td><td><b>${esc(a.c.name)}</b><span class="sub">${a.n} proforma</span></td><td class="r strong">${byCurText(a.by) || "—"}</td></tr>`).join("")}</tbody></table></div>`
          : `<div class="empty">Henüz bir cariye proforma verilmedi.</div>`}</section>
-   </div>
-   ${accountCard()}</div>`;
+   </div></div>`;
 }
 /* tek seri sütun grafik: ölçek 0'dan, yatay ızgara, son ay etiketli, diğerleri üzerine gelince */
 function monthChart(months) {
@@ -888,11 +953,41 @@ function monthChart(months) {
       return `<button type="button" class="mc-col" data-act="mc-tip" data-i="${i}" aria-label="${esc(name)}"><span class="mc-bar${m.n ? "" : " zero"}" style="height:${m.n / top * 100}%;--i:${i}">${last && m.n ? `<em class="num" aria-hidden="true">${m.n}</em>` : ""}</span>
       <span class="mc-tip" aria-hidden="true"><b>${esc(m.full)}</b><span>${m.n} proforma</span>${m.n ? `<span>${byCurText(m.by)}</span>` : ""}</span><span class="mc-x" aria-hidden="true">${esc(m.label)}</span></button>`; }).join("")}</div></div>`;
 }
-function accountCard() {
-  return `<section class="card" id="hesap"><div class="card-h"><h2 class="ttl">Hesap Ayarları</h2><span class="tag ${S.role === "admin" ? "blue" : "green"}">${S.role === "admin" ? "Yönetici" : "Kullanıcı"}</span>${Store.mode === "demo" ? `<span class="tag amber">Demo · bu tarayıcıda</span>` : ""}</div>
-    <div class="fgrid"><div class="fld s2"><span class="lbl">E-posta</span><div class="sysno"><b>${esc(S.user.email)}</b></div></div><div class="fld s2"><span class="lbl">Firmalar</span><a class="btn" href="#firma" style="justify-self:start">${ICON.firm} ${isAdmin() ? "Firma ve banka bilgilerini düzenle" : "Firma ve banka bilgilerini gör"}</a></div></div>
-    <form class="fgrid" data-form="pwchange" style="margin-top:16px" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s2"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s2"')}
-     <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button class="btn danger" type="button" data-act="logout">${ICON.out} Çıkış yap</button><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section>`;
+/* ---------- HESAP AYARLARI sayfası ---------- */
+function pageAccount() {
+  const m = S.me || {}, A = S.acct || (S.acct = acctBuf()), nm = nameOf(m), prof = "first_name" in m;
+  const fld = (k, label, em, attrs) => `<div class="fld s2"><label for="pf_${k}">${label}${em ? ` <em>${em}</em>` : ""}</label><input id="pf_${k}" name="${k}" data-acct="${k}" value="${esc(A[k])}"${attrs}></div>`;
+  return `<div class="page"><div class="head-row"><div><div class="eyebrow soft">Hesap</div><h1>Hesap ayarları</h1><p class="lead">Profil bilgileriniz, fotoğrafınız ve şifreniz. Adınız ve soyadınız proformalarda “Hazırlayan” olarak basılır; her proformada gizleyebilirsiniz.</p></div></div>
+   <div class="acct-grid">
+    <section class="card"><div class="card-h"><h2 class="ttl">Profil</h2></div>
+     ${prof ? `<div class="acct-photo">${avatarHtml(m, "lg", S.user.email)}<div><b>${esc(nm || "Ad ve soyad girilmedi")}</b><span>${esc(S.user.email)}</span>
+        <div class="acct-pb"><button class="btn sm" data-act="avatar-up">${ICON.plus} ${m.avatar ? "Fotoğrafı değiştir" : "Fotoğraf yükle"}</button>${m.avatar ? `<button class="btn ghost sm" data-act="avatar-del">${ICON.x} Kaldır</button>` : ""}
+          <input type="file" id="avatarIn" accept="image/png,image/jpeg,image/webp" data-up="avatar" hidden></div>
+        <p class="hint" style="margin:0">JPG, PNG ya da WebP. 256 piksele küçültülür; yalnızca uygulamada görünür, proformaya basılmaz.</p></div></div>
+     <form class="fgrid" data-form="profile" novalidate>
+       ${fld("first_name", "Ad", "zorunlu", ' autocomplete="given-name" maxlength="60" required')}${fld("last_name", "Soyad", "zorunlu", ' autocomplete="family-name" maxlength="60" required')}
+       ${fld("title", "Unvan", "isteğe bağlı · proformada adınızın yanında", ' autocomplete="organization-title" maxlength="80" placeholder="Örn. Satış Müdürü"')}${fld("phone", "Telefon", "isteğe bağlı", ' type="tel" inputmode="tel" autocomplete="tel" maxlength="40" placeholder="+90 5xx xxx xx xx"')}
+       <div class="fld s4"><span class="lbl">E-posta <em>giriş adresiniz · değiştirilemez</em></span><div class="sysno"><b>${esc(S.user.email)}</b></div></div>
+       <div class="form-err s4" role="alert"></div>
+       <div class="card-f s4"><div class="grow muted small">Proformada: <b id="pfPrev">${esc(prepText(acctPrep(A)) || "—")}</b></div><div class="btns"><button class="btn blue" type="submit">${ICON.check} Kaydet</button></div></div>
+     </form>` : `<div class="empty">Profil bilgileri için veritabanı güncellemesi bekleniyor. Yönetici güncel <code>schema.sql</code> dosyasını çalıştırdığında burada adınızı, unvanınızı, telefonunuzu ve fotoğrafınızı düzenleyebilirsiniz.</div>`}
+    </section>
+    <div class="acct-side">
+     <section class="card"><div class="card-h"><h2 class="ttl">Hesap</h2><span class="tag ${S.role === "admin" ? "blue" : "green"}">${S.role === "admin" ? "Yönetici" : "Kullanıcı"}</span>${Store.mode === "demo" ? `<span class="tag amber">Demo · bu tarayıcıda</span>` : ""}</div>
+       <div class="kvs">${kv("E-posta", esc(S.user.email))}${kv("Firmalar", `<a href="#firma">${isAdmin() ? "Firma ve banka bilgilerini düzenle" : "Firma ve banka bilgilerini gör"}</a>`)}</div></section>
+     <section class="card"><div class="card-h"><h2 class="ttl">Şifre değiştir</h2></div>
+       <form class="fgrid acct-pw" data-form="pwchange" novalidate>${pwField("p_new", "password", "Yeni şifre", "new-password", "", true).replace('class="fld"', 'class="fld s4"')}${pwField("p_new2", "password2", "Yeni şifre (tekrar)", "new-password").replace('class="fld"', 'class="fld s4"')}
+        <div class="form-err s4" role="alert"></div><div class="s4" style="display:flex;justify-content:flex-end"><button class="btn" type="submit">${ICON.lock} Şifreyi değiştir</button></div></form></section>
+     <section class="card"><div class="card-h"><h2 class="ttl">Oturum</h2></div><p class="muted small" style="margin:0 0 14px">Bu cihazdaki oturumunuzu kapatır. Kaydedilmemiş taslak varsa önce uyarılırsınız.</p><button class="btn danger" data-act="logout">${ICON.out} Çıkış yap</button></section>
+    </div></div></div>`;
+}
+const acctPrep = A => { const n = [A.first_name, A.last_name].map(v => String(v || "").trim()).filter(Boolean).join(" "); return n ? {name: n, title: String(A.title || "").trim()} : null; };
+async function saveAvatar(u) {
+  const m = S.me || {};
+  try {
+    await Store.rpc("update_my_profile", {p_first: m.first_name, p_last: m.last_name, p_title: m.title || null, p_phone: m.phone || null, p_avatar: u || null, p_set_avatar: true});
+    m.avatar = u || null; renderTop(); renderMain(); toast(u ? "Profil fotoğrafınız güncellendi" : "Profil fotoğrafınız kaldırıldı");
+  } catch (e) { toastErr("Fotoğraf kaydedilemedi: " + authError(e)); }
 }
 
 /* ---------- CARİ KARTLAR sayfası ---------- */
@@ -964,20 +1059,20 @@ function usersBody() {
       + (u.status === "suspended" ? `<button class="btn blue sm" data-act="adm-unfreeze" data-id="${esc(u.id)}">${ICON.check} Aktif et</button>` : "")
       + `<button class="btn sm" data-act="adm-pw" data-id="${esc(u.id)}">${ICON.key} Şifre</button>`
       + `<button class="ibtn danger" data-act="adm-delete" data-id="${esc(u.id)}" title="Hesabı sil" aria-label="Hesabı sil">${ICON.trash}</button>`;
-    return `<tr class="row${u.status === "pending" ? " promo" : ""}"><td><b>${esc(u.email || "—")}</b>${me ? ` <span class="tag blue">Siz</span>` : ""}<span class="sub">${u.role === "admin" ? "Yönetici" : "Kullanıcı"}</span></td>
+    return `<tr class="row${u.status === "pending" ? " promo" : ""}"><td><div class="person">${avatarHtml(u, "sm")}<div><b>${esc(nameOf(u) || u.email || "—")}</b>${me ? ` <span class="tag blue">Siz</span>` : ""}<span class="sub">${nameOf(u) ? esc(u.email) + " · " : ""}${u.role === "admin" ? "Yönetici" : "Kullanıcı"}${u.title ? " · " + esc(u.title) : ""}</span></div></div></td>
       <td><span class="tag ${cls}">${lbl}</span>${u.must_change ? ` <span class="tag grey">Geçici şifre</span>` : ""}</td><td class="num">${fmtTs(u.created_at)}</td><td class="num">${fmtTs(u.last_sign_in_at)}</td>
       <td>${u.email_confirmed_at ? `<span class="tag green">Onaylı</span>` : `<span class="tag amber">Bekliyor</span>`}</td><td class="c">${esc(u.doc_count ?? 0)}</td><td><div class="acts">${acts}</div></td></tr>`; }).join("");
   return `<div class="toolbar"><section class="card"><div class="seg" role="group" aria-label="Duruma göre filtrele" style="width:100%">${[["", "Tümü", all.length], ["pending", "Onay bekleyen", cnt("pending")], ["active", "Aktif", cnt("active")], ["suspended", "Dondurulan", cnt("suspended")]].map(([k, l, n]) => `<button data-act="adm-filter" data-f="${k}" aria-pressed="${f === k}">${l} <span class="muted">${n}</span></button>`).join("")}</div></section>
     <section class="card"><dl class="sumbox"><div><dt>Onay bekleyen</dt><dd class="${cnt("pending") ? "red" : ""}">${cnt("pending")}</dd></div><div><dt>Aktif</dt><dd class="green">${cnt("active")}</dd></div><div><dt>Dondurulan</dt><dd>${cnt("suspended")}</dd></div></dl></section></div>
    <section class="card"><div class="card-h"><h2 class="ttl">Hesaplar</h2><span class="muted small">${list.length} / ${all.length}</span></div>
-    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>E-posta</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section>`;
+    ${list.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Kullanıcı</th><th>Durum</th><th>Kayıt</th><th>Son giriş</th><th>E-posta onayı</th><th class="c">Kayıt sayısı</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty">Bu filtrede hesap yok.</div>`}</section>`;
 }
 
 /* ---------- DENETİM ----------
    Veriler yalnızca yönetici fonksiyonlarından gelir (schema.sql · 9): tüm kullanıcıların proformaları, kullanım oturumları ve işlem geçmişi. */
 const AUD_PERIODS = [["1", "Bugün"], ["7", "Son 7 gün"], ["30", "Son 30 gün"], ["month", "Bu ay"], ["all", "Tümü"]];
 const AUD_VIEWS = [["users", "Kullanıcılar"], ["quotes", "Proformalar"], ["sessions", "Oturumlar"], ["log", "İşlem geçmişi"]];
-const AUD_CATS = [["", "Tümü"], ["login", "Girişler"], ["quote", "Proforma"], ["stage", "Aşama"], ["customer", "Cari"], ["download", "İndirme"], ["admin", "Yönetim"]];
+const AUD_CATS = [["", "Tümü"], ["login", "Girişler"], ["quote", "Proforma"], ["stage", "Aşama"], ["customer", "Cari"], ["download", "İndirme"], ["profile", "Profil"], ["admin", "Yönetim"]];
 const AUD_PAGE = 150, ONLINE_MS = 150000;
 function auditSince(p) {
   const d = new Date(); d.setHours(0, 0, 0, 0);
@@ -1011,12 +1106,12 @@ function uaShort(ua) {
   return [br, os].filter(Boolean).join(" · ") || "Diğer";
 }
 const audCreated = x => Number(x.createdAt) || tsMs(x.date ? x.date + "T12:00:00" : 0) || tsMs(x.rowAt);
-const audCat = a => a === "login" ? "login" : a === "quote_stage" ? "stage" : /^quote_/.test(a) ? "quote" : /^customer_/.test(a) ? "customer" : (a === "pdf" || a === "xlsx") ? "download" : "admin";
+const audCat = a => a === "login" ? "login" : a === "profile_update" ? "profile" : a === "quote_stage" ? "stage" : /^quote_/.test(a) ? "quote" : /^customer_/.test(a) ? "customer" : (a === "pdf" || a === "xlsx") ? "download" : "admin";
 const stageName = k => (STAGE_BY[k] || {l: k || "—"}).l;
 /* kişi listesi: tüm hesaplar ve kayıtlarda geçen (sonradan silinmiş) hesaplar */
 function audPeople() {
   const A = S.audit, by = new Map();
-  (S.admin.users || []).forEach(u => by.set(u.id, {id: u.id, email: u.email || "—", role: u.role, status: u.status, lastSignIn: tsMs(u.last_sign_in_at)}));
+  (S.admin.users || []).forEach(u => by.set(u.id, {id: u.id, email: u.email || "—", name: nameOf(u), avatar: u.avatar, first_name: u.first_name, last_name: u.last_name, role: u.role, status: u.status, lastSignIn: tsMs(u.last_sign_in_at)}));
   const add = (id, email) => { if (id && !by.has(id)) by.set(id, {id, email: email || "Silinmiş hesap", gone: true}); };
   A.quotes.forEach(x => add(x.owner, x.ownerEmail)); A.sessions.forEach(s => add(s.user_id, s.email)); A.log.forEach(e => add(e.user_id, e.email));
   return by;
@@ -1039,7 +1134,7 @@ function auditBody() {
   const byCurT = byCurText(sumByCur(D.quotes)), won = D.quotes.filter(x => STAGE_BY[stageOf(x)].grp === "won").length;
   const users = new Set(D.logins.map(l => l.user_id)), act7 = D.sessions.reduce((a, s) => a + (Number(s.active_secs) || 0), 0);
   const kpi = (label, value, sub) => `<div class="kpi card"><span class="k-l">${label}</span><b class="k-v num">${value}</b><span class="k-s">${sub}</span></div>`;
-  const sel = `<div class="fld aud-user"><label for="aud_u">Kullanıcı</label><select id="aud_u" data-f="audit.user"><option value="">Tüm kullanıcılar</option>${[...people.values()].sort((a, b) => a.email.localeCompare(b.email, "tr")).map(p => opt(p.id, A.user, p.email + (p.gone ? " (silinmiş)" : ""))).join("")}</select></div>`;
+  const sel = `<div class="fld aud-user"><label for="aud_u">Kullanıcı</label><select id="aud_u" data-f="audit.user"><option value="">Tüm kullanıcılar</option>${[...people.values()].sort((a, b) => personLabel(a).localeCompare(personLabel(b), "tr")).map(p => opt(p.id, A.user, (p.name ? p.name + " · " + p.email : p.email) + (p.gone ? " (silinmiş)" : ""))).join("")}</select></div>`;
   const per = `<div class="fld"><span class="lbl" id="audPerLbl">Dönem</span><div class="seg" role="group" aria-labelledby="audPerLbl">${AUD_PERIODS.map(([k, l]) => `<button data-act="aud-period" data-v="${k}" aria-pressed="${A.period === k}"${A.loading ? " disabled" : ""}>${l}</button>`).join("")}</div></div>`;
   const view = AUD_VIEWS.some(v => v[0] === A.view) ? A.view : "users";
   return `<section class="card aud-bar">${per}${sel}<p class="muted small aud-at">${A.loading ? "Güncelleniyor…" : "Güncellendi: " + fmtTs(new Date(A.at).toISOString())}${act ? ` · <span class="online"><i aria-hidden="true"></i>${act} kişi şu an çevrimiçi</span>` : ""}</p></section>
@@ -1049,7 +1144,8 @@ function auditBody() {
 }
 function sessionsActive(list) { const now = Date.now(); return new Set(list.filter(s => now - tsMs(s.last_seen) < ONLINE_MS).map(s => s.user_id)).size; }
 const curLines = by => Object.keys(by).length ? Object.entries(by).map(([c, v]) => `<span class="cl">${money(v, c)}</span>`).join("") : "—";
-const personCell = (p, sub) => `<b>${esc(p ? p.email : "—")}</b>${p && p.gone ? ` <span class="tag grey">Silinmiş</span>` : ""}${sub ? `<span class="sub">${sub}</span>` : ""}`;
+const personLabel = p => (p && (p.name || p.email)) || "—";
+const personCell = (p, sub) => `<div class="person">${avatarHtml(p, "sm", p && p.email)}<div><b>${esc(personLabel(p))}</b>${p && p.gone ? ` <span class="tag grey">Silinmiş</span>` : ""}${(p && p.name) || sub ? `<span class="sub">${[p && p.name ? esc(p.email) : "", sub].filter(Boolean).join(" · ")}</span>` : ""}</div></div>`;
 /* kullanıcı özeti: kişi başına giriş, kullanım, proforma ve aşama dağılımı */
 function audUsers(D, people) {
   const A = S.audit, now = Date.now();
@@ -1058,7 +1154,7 @@ function audUsers(D, people) {
     const g = k => qs.filter(x => STAGE_BY[stageOf(x)].grp === k).length;
     const lastLogin = Math.max(p.lastSignIn || 0, ...lg.map(l => l.at)), lastAct = Math.max(0, ...ss.map(s => tsMs(s.last_seen)), ...D.log.filter(e => e.user_id === p.id).map(e => tsMs(e.at)));
     return {p, qs, ss, lg, open: g("open"), won: g("won"), lost: g("lost"), usage: ss.reduce((a, s) => a + (Number(s.active_secs) || 0), 0), lastLogin, lastAct, online: ss.some(s => now - tsMs(s.last_seen) < ONLINE_MS)};
-  }).filter(r => r.qs.length || r.ss.length || r.lg.length || !r.p.gone).sort((a, b) => b.lastAct - a.lastAct || a.p.email.localeCompare(b.p.email, "tr"));
+  }).filter(r => r.qs.length || r.ss.length || r.lg.length || !r.p.gone).sort((a, b) => b.lastAct - a.lastAct || personLabel(a.p).localeCompare(personLabel(b.p), "tr"));
   const tr = r => `<tr class="row clk${A.user === r.p.id ? " on" : ""}" data-act="aud-user" data-id="${esc(r.p.id)}" title="Yalnızca bu kullanıcıyı göster">
       <td>${personCell(r.p, (r.p.role === "admin" ? "Yönetici" : r.p.gone ? "" : "Kullanıcı") + (r.p.status && r.p.status !== "active" ? " · " + (USER_STATUS[r.p.status] || ["", r.p.status])[1] : ""))}${r.online ? ` <span class="online"><i aria-hidden="true"></i>Çevrimiçi</span>` : ""}</td>
       <td class="num">${r.lastLogin ? fmtTs(new Date(r.lastLogin).toISOString()) : "—"}<span class="sub">${r.lastLogin ? relTime(r.lastLogin) : ""}</span></td>
@@ -1066,14 +1162,14 @@ function audUsers(D, people) {
       <td class="c num"><b>${r.qs.length}</b></td>
       <td><div class="aud-mix">${r.open ? `<span class="tag blue">${r.open} süreçte</span>` : ""}${r.won ? `<span class="tag green">${r.won} olumlu</span>` : ""}${r.lost ? `<span class="tag red">${r.lost} olumsuz</span>` : ""}${r.qs.length ? "" : `<span class="muted">—</span>`}</div></td>
       <td class="num">${curLines(sumByCur(r.qs))}</td><td class="num">${relTime(r.lastAct)}</td></tr>`;
-  return `<section class="card"><div class="card-h"><h2 class="ttl">Kullanıcı özeti</h2><span class="muted small">Seçili dönem · satıra tıklayınca yalnızca o kullanıcı gösterilir</span>${A.user ? `<div class="acts"><button class="tag blue fchip" data-act="aud-user" data-id="" title="Kullanıcı filtresini kaldır">${esc((people.get(A.user) || {}).email || "")} ${ICON.x}</button></div>` : ""}</div>
+  return `<section class="card"><div class="card-h"><h2 class="ttl">Kullanıcı özeti</h2><span class="muted small">Seçili dönem · satıra tıklayınca yalnızca o kullanıcı gösterilir</span>${A.user ? `<div class="acts"><button class="tag blue fchip" data-act="aud-user" data-id="" title="Kullanıcı filtresini kaldır">${esc(personLabel(people.get(A.user)))} ${ICON.x}</button></div>` : ""}</div>
     ${rows.length ? `<div class="tbl-wrap"><table class="tbl aud"><thead><tr><th>Kullanıcı</th><th>Son giriş</th><th class="c">Giriş</th><th>Etkin kullanım</th><th class="c">Proforma</th><th>Aşamalar</th><th>Tutar</th><th>Son işlem</th></tr></thead><tbody>${rows.map(tr).join("")}</tbody></table></div>` : `<div class="empty">Bu dönemde kayıt yok.</div>`}</section>`;
 }
 /* proformalar: kullanıcıya ya da aşamaya göre gruplu */
 function audQuotes(D, people) {
   const A = S.audit, byStage = A.group === "stage", list = [...D.quotes].sort((a, b) => audCreated(b) - audCreated(a));
   const groups = byStage ? STAGES.map(st => ({k: "s:" + st.k, cls: "st-" + st.k, label: st.l, desc: st.d, items: list.filter(x => stageOf(x) === st.k)}))
-    : [...new Set(list.map(x => x.owner))].map(id => ({k: "u:" + id, cls: "st-all", label: (people.get(id) || {}).email || "—", desc: "", items: list.filter(x => x.owner === id)})).sort((a, b) => b.items.length - a.items.length);
+    : [...new Set(list.map(x => x.owner))].map(id => ({k: "u:" + id, cls: "st-all", label: personLabel(people.get(id)), desc: "", items: list.filter(x => x.owner === id)})).sort((a, b) => b.items.length - a.items.length);
   const row = x => { const open = A.open.has(x.id), log = (Array.isArray(x.stageLog) ? x.stageLog : []).filter(e => e && STAGE_BY[e.k]);
     return `<tr class="row"><td class="num d-col">${fmtDate(x.date)}</td><td class="code num">${esc(x.no || "—")}<span class="sub">${esc(TITLE_SHORT[x.title] || x.title || "")} · ${brandOf(x)} · ${langOf(x).toUpperCase()}</span></td>
       <td><b>${esc(x.buyer || "—")}</b><span class="sub">${esc([x.city, x.country].filter(Boolean).join(", ") || x.sellerName || "")}</span></td>
@@ -1081,7 +1177,7 @@ function audQuotes(D, people) {
       <td class="c k-col"><span class="tag blue">${x.itemCount || 0} kalem</span></td><td class="r strong">${money(x.total, x.currency)}</td>
       <td class="num k-col">${fmtTs(new Date(audCreated(x)).toISOString())}</td>
       <td><button class="btn sm" data-act="aud-open" data-id="${esc(x.id)}" aria-expanded="${open}">${open ? ICON.minus : ICON.plus} Detay</button></td></tr>
-      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Oluşturan", esc((people.get(x.owner) || {}).email || "—"))}${kv("Firma", esc(x.sellerName || "—"))}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Oluşturma", fmtTs(new Date(audCreated(x)).toISOString()))}${kv("Son değişiklik", fmtTs(x.rowAt))}
+      ${open ? `<tr class="detail"><td colspan="8"><div class="detail-in">${kv("Oluşturan", esc(personLabel(people.get(x.owner))))}${kv("Hazırlayan", x.preparer ? esc(prepText(x.preparer)) + (x.showPreparer === false ? ' <span class="muted">· proformada gizli</span>' : "") : "—")}${kv("Firma", esc(x.sellerName || "—"))}${kv("Ödeme", esc(x.payment || "—"))}${kv("Teslim", esc(x.delivery || "—"))}${kv("Oluşturma", fmtTs(new Date(audCreated(x)).toISOString()))}${kv("Son değişiklik", fmtTs(x.rowAt))}
         ${log.length ? `<div class="kv wide"><span>Aşama geçmişi</span><b>${log.map(e => `${esc(STAGE_BY[e.k].l)} <span class="muted">${e.at ? fmtTs(new Date(e.at).toISOString()) : ""}</span>`).join(" → ")}</b></div>` : ""}</div></td></tr>` : ""}`; };
   const body = groups.filter(g => g.items.length).map(g => { const coll = A.coll.has(g.k);
     return `<tbody class="grp ${g.cls}"><tr class="grp-h"><th colspan="8"><button data-act="aud-grp" data-k="${esc(g.k)}" aria-expanded="${!coll}"><span class="chev">${ICON.chev}</span><i class="dot" aria-hidden="true"></i><b>${esc(g.label)}</b><span class="cnt">${g.items.length}</span><span class="sum num">${byCurText(sumByCur(g.items))}</span>${g.desc ? `<span class="grp-d">${esc(g.desc)}</span>` : ""}</button></th></tr>${coll ? "" : g.items.map(row).join("")}</tbody>`; }).join("");
@@ -1117,6 +1213,7 @@ function audText(e) {
     case "company_create": case "company_update": case "company_delete": return `${L} firma kaydını ${verb}`;
     case "user_status": return `${L} hesabını ${d.to === "suspended" ? "dondurdu" : d.from === "pending" ? "onayladı" : "yeniden aktif etti"}`;
     case "user_password": return `${L} hesabına geçici şifre verdi`;
+    case "profile_update": return d.avatar ? "Profil fotoğrafını güncelledi" : `Profil bilgilerini güncelledi · ${L}`;
     case "user_delete": return `${L} hesabını sildi${d.quotes ? ` · ${d.quotes} proformasıyla birlikte` : ""}`;
     default: return esc(e.action);
   }
@@ -1294,7 +1391,7 @@ function startNew(prefill) {
 function duplicate(src) {
   const q = normQuote(JSON.parse(JSON.stringify(src)));
   Object.assign(q, {id: rid(), no: "", sysNo: "", date: today(), status: "draft", saved: false, dirty: false, sample: false, hsCodes: hsList(q).slice()});
-  delete q.createdAt; delete q.updatedAt; delete q.total; delete q.stage; delete q.stageAt; delete q.stageLog;
+  delete q.createdAt; delete q.updatedAt; delete q.total; delete q.stage; delete q.stageAt; delete q.stageLog; delete q.preparer;
   if (q.title === "REVISED PROFORMA INVOICE") q.title = "PROFORMA INVOICE";
   return q;
 }
@@ -1315,6 +1412,7 @@ async function createProforma(btn) {
   try {
     const isNew = !q.saved, co = companyById(q.companyId);
     if (isNew && co) applyCompany(q, co);   /* yeni proforma firmanın o anki bilgileriyle kesilir */
+    if (isNew || !q.preparer) { const me = mePrep(); if (me) q.preparer = me; }   /* hazırlayan: oluşturan kişi (sonradan değişmez) */
     const d = quoteDoc(q), cur = !isNew && S.quotes.find(x => x.id === q.id);
     if (isNew) { d.no = ""; delete d.sysNo; }
     if (cur && STAGE_BY[cur.stage]) ["stage", "stageAt", "stageLog"].forEach(k => { d[k] = JSON.parse(JSON.stringify(cur[k] ?? null)); });   /* aşama Kayıtlar'dan yönetilir */
@@ -1439,12 +1537,27 @@ document.addEventListener("input", e => {
   if (d.ce) { if (S.cariEdit) S.cariEdit[d.ce] = t.value; if (d.ce === "name" && S.cariTried) t.classList.toggle("need", !t.value.trim()); return; }
   if (d.le) { S.lib.edit[d.le] = t.value; if (d.le === "type") renderMain(); return; }
   if (d.coe) { if (S.co.edit) S.co.edit[d.coe] = t.value; return; }
+  if (d.acct) { if (S.acct) S.acct[d.acct] = t.value; t.classList.remove("need"); t.removeAttribute("aria-invalid"); const pv = $("pfPrev"); if (pv && S.acct) pv.textContent = prepText(acctPrep(S.acct)) || "—"; return; }
   if (d.an) { S.annEdit[d.an] = t.value; return; }
 });
 /* alan düzeltildikçe aria-invalid güncellenir */
 document.addEventListener("input", e => { const t = e.target; if (t.matches && t.matches("input, select, textarea")) queueMicrotask(() => syncInvalid($("main"))); });
 document.addEventListener("change", e => {
   const t = e.target, d = t.dataset, c = S.cfg;
+  if (d.up === "avatar") {
+    const file = t.files && t.files[0]; t.value = ""; if (!file) return;
+    shrinkImage(file, 256, "image/jpeg", 0.85).then(saveAvatar).catch(err => toastErr((err && err.message) || "Fotoğraf eklenemedi"));
+    return;
+  }
+  if (d.qb) {
+    S.q[d.qb] = t.checked; touch(); refreshPaper();
+    if (d.qb === "showPreparer") {
+      PREP_DEF = t.checked; lsSet("ndl-showprep", t.checked ? "1" : "0");
+      const box = t.closest(".fld"); if (box) { box.outerHTML = prepSwitch(S.q); const n = document.querySelector('[data-qb="showPreparer"]'); if (n) n.focus({preventScroll: true}); }
+      announce(t.checked ? "Hazırlayan proformada gösterilecek" : "Hazırlayan proformada gösterilmeyecek");
+    }
+    return;
+  }
   if (d.up) {
     const file = t.files && t.files[0]; t.value = ""; if (!file || !isAdmin()) return;
     const lib = d.up === "lib";
@@ -1472,6 +1585,13 @@ document.addEventListener("submit", async e => {
   const kind = f.dataset.form, fd = new FormData(f), email = String(fd.get("email") || "").trim(), pw = String(fd.get("password") || ""), pw2 = String(fd.get("password2") || "");
   const err = f.querySelector(".form-err"), btn = f.querySelector("button[type=submit]"), setErr = m => { if (err) err.textContent = m; };
   setErr("");
+  const fn = String(fd.get("first_name") || "").trim(), ln = String(fd.get("last_name") || "").trim(), phone = String(fd.get("phone") || "").trim(), title = String(fd.get("title") || "").trim();
+  if (["signup", "namegate", "profile"].includes(kind)) {
+    const bad = [["first_name", fn], ["last_name", ln]].filter(([, v]) => v.length < 2);
+    f.querySelectorAll('[name="first_name"], [name="last_name"]').forEach(i => { const on = bad.some(([k]) => k === i.name); i.classList.toggle("need", on); if (on) i.setAttribute("aria-invalid", "true"); else i.removeAttribute("aria-invalid"); });
+    if (bad.length) { const i = f.querySelector(`[name="${bad[0][0]}"]`); if (i) i.focus(); return setErr(bad.length === 2 ? "Adınızı ve soyadınızı yazın (en az 2 karakter)." : bad[0][0] === "first_name" ? "Adınızı yazın (en az 2 karakter)." : "Soyadınızı yazın (en az 2 karakter)."); }
+    if (phone && !/^[0-9+(). /-]+$/.test(phone)) { const i = f.querySelector('[name="phone"]'); if (i) { i.classList.add("need"); i.focus(); } return setErr("Telefon numarasında yalnızca rakam, boşluk ve + ( ) - . / kullanılabilir."); }
+  }
   if (["login", "signup", "reset"].includes(kind) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setErr("Geçerli bir e-posta adresi yazın.");
   if (kind === "login" && !pw) return setErr("Şifrenizi yazın.");
   const newPw = ["signup", "recovery", "pwchange", "forcepw", "adminpw"].includes(kind);
@@ -1488,10 +1608,15 @@ document.addEventListener("submit", async e => {
   }
   try {
     if (kind === "login") { S.loginKind = "login"; await Store.signIn(email, pw); if (!S.user) { const u = await Store.session(); if (u) await enter(u); } }
-    else if (kind === "signup") { S.loginKind = "login"; const r = await Store.signUp(email, pw); S.authEmail = email; if (r.confirm) { S.auth = "confirm"; renderAuth(); } }
+    else if (kind === "signup") { S.loginKind = "login"; S.signupName = {first_name: fn, last_name: ln}; const r = await Store.signUp(email, pw, {first_name: fn, last_name: ln}); S.authEmail = email; if (r.confirm) { S.auth = "confirm"; renderAuth(); } }
     else if (kind === "reset") { await Store.reset(email); S.authEmail = email; S.auth = "sent"; renderAuth(); }
     else if (kind === "recovery") { S.loginKind = "login"; await Store.setPassword(pw); S.auth = "login"; toast("Şifreniz güncellendi"); history.replaceState(null, "", location.pathname + "#proforma"); const u = await Store.session(); if (u) await enter(u); else renderAuth(); }
     else if (kind === "pwchange") { await Store.setPassword(pw); f.reset(); toast("Şifreniz değiştirildi"); }
+    else if (kind === "namegate") { const m = S.me || {}; await Store.rpc("update_my_profile", {p_first: fn, p_last: ln, p_title: m.title || null, p_phone: m.phone || null}); Object.assign(m, {first_name: fn, last_name: ln}); toast("Teşekkürler, " + fn); if (S.user) await enter(S.user); }
+    else if (kind === "profile") {
+      await Store.rpc("update_my_profile", {p_first: fn, p_last: ln, p_title: title || null, p_phone: phone || null});
+      Object.assign(S.me, {first_name: fn, last_name: ln, title: title || null, phone: phone || null}); S.acct = acctBuf(); renderTop(); renderMain(); toast("Profiliniz kaydedildi");
+    }
     else if (kind === "forcepw") { await Store.setPassword(pw); toast("Yeni şifreniz kaydedildi"); const u = S.user; if (u) await enter(u); }
     else if (kind === "adminpw") { const u = (S.admin.users || []).find(x => x.id === f.dataset.id); await Store.rpc("admin_set_password", {target: f.dataset.id, new_password: pw}); $("confirm").hidden = true; toast((u ? u.email : "Kullanıcı") + " için geçici şifre kaydedildi; ilk girişte değiştirmesi istenecek"); loadUsers(); }
   } catch (x) { S.loginKind = ""; setErr(authError(x)); }
@@ -1500,10 +1625,10 @@ document.addEventListener("submit", async e => {
 document.addEventListener("keydown", e => {
   const t = e.target;
   if (t && t.id === "r_hs" && (e.key === "Enter" || e.key === "," || e.key === ";")) { e.preventDefault(); if (t.value.trim()) addHs(t.value); return; }
-  if (e.key === "Escape") { if (S.confirm) { S.confirm = null; renderConfirm(); } else if (S.menu) { S.menu = null; renderTop(); } } });
+  if (e.key === "Escape") { if (S.confirm) { S.confirm = null; renderConfirm(); } else if (S.menu) closeMenu(true); } });
 $("confirm").addEventListener("click", e => { if (e.target.id === "confirm") { S.confirm = null; renderConfirm(); } });
 document.addEventListener("click", async e => {
-  if (S.menu && !e.target.closest(".umenu")) { S.menu = null; renderTop(); }
+  if (S.menu && !e.target.closest(S.menu === "draft" ? ".dmenu" : ".umenu")) { S.menu = null; renderTop(); }
   const b = e.target.closest("[data-act]"); if (!b) return;
   const a = b.dataset.act, c = S.cfg, q = S.q, i = b.dataset.i != null ? +b.dataset.i : -1;
   switch (a) {
@@ -1521,6 +1646,12 @@ document.addEventListener("click", async e => {
     case "theme": { const r = document.documentElement; r.classList.add("notr"); lsSet("ndl-theme", isDark() ? "light" : "dark"); applyTheme(); renderTop();
       void getComputedStyle(r).color; const off = () => r.classList.remove("notr"); requestAnimationFrame(() => requestAnimationFrame(off)); setTimeout(off, 200); break; }
     case "umenu": S.menu = S.menu === "user" ? null : "user"; renderTop(); break;
+    case "draft": if (S.menu === "draft") closeMenu(true); else { S.menu = "draft"; renderTop(); const p = $("draftPop"); if (p) p.focus(); } break;
+    case "draft-close": closeMenu(b.tagName !== "A"); break;
+    case "draft-go": { const n = Math.min(3, Math.max(1, +b.dataset.n || 1)); closeMenu(false); setStep(n); break; }
+    case "draft-new": closeMenu(false); guard("Yeni proforma açılırsa", () => startNew()); break;
+    case "avatar-up": { const i = $("avatarIn"); if (i) i.click(); break; }
+    case "avatar-del": saveAvatar(null); break;
     case "go": go(b.dataset.v); break;
     case "step": setStep(+b.dataset.n); break;
     case "new": guard("Yeni proforma açılırsa", () => startNew()); break;
@@ -1668,7 +1799,7 @@ document.addEventListener("click", async e => {
 });
 
 /* ---------- yönlendirme ---------- */
-const VIEWS = ["pano", "proforma", "proformalar", "alicilar", "urunler", "firma", "yonetim"];
+const VIEWS = ["pano", "proforma", "proformalar", "alicilar", "urunler", "firma", "yonetim", "hesap"];
 function fromHash() {
   if (!S.user || !$("main")) return;
   const prev = S.view, keep = S.keepQ; S.keepQ = false;
@@ -1676,6 +1807,7 @@ function fromHash() {
   if (S.view === "proforma" && prev !== "proforma" && !keep && S.q && S.q.saved && !S.q.dirty) { S.q = newQuote(); S.cfg = newCfg(); S.cfgTried = false; S.step = 1; S.openRows.clear(); S.pick = {search: "", mode: ""}; saveDraft(); updateCart(); }
   if (S.view !== "firma" && S.co.edit && !S.co.edit.id) S.co.edit = null;
   if (S.view === "yonetim" && S.role !== "admin") S.view = "pano";
+  if (S.view === "hesap" && prev !== "hesap") S.acct = acctBuf();
   if (S.view === "yonetim") loadUsers(true);
   if (S.view !== "alicilar" && S.view !== "proforma") { S.cariEdit = null; S.pick.mode = ""; }
   renderSide(); renderMain(); const m = $("main"); if (m) m.scrollTop = 0;

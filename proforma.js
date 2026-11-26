@@ -14,6 +14,7 @@ const XLSX_SRI = "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvA
 const BRANDS = ["NDL", "DLP"];
 const BRAND_IMG = {NDL: "ndl.jpg", DLP: "dlp.jpg"};
 let BRAND_DEF = "NDL";                   // yeni proformanın markası (son kullanılan; app.js günceller)
+let PREP_DEF = true;                     // yeni proformada hazırlayan basılsın mı (son tercih; app.js günceller)
 const brandOf = q => (q && BRANDS.includes(q.brand)) ? q.brand : "NDL";
 const inBrand = (p, b) => !p || !Array.isArray(p.brands) || !p.brands.length || p.brands.includes(b);
 const bCode = (code, b) => String(code ?? "").replace(/^(NDL|DLP)(?=[\s\-.]|$)/i, b || "NDL");
@@ -27,11 +28,11 @@ const langOf = q => (q && q.lang === "tr") ? "tr" : "en";
 const OUT = {
   en: {buyer: "BUYER", address: "ADDRESS", date: "DATE", no: "NO", payment: "PAYMENT TERM", delivery: "DELIVERY TERM", validity: "OFFER VALIDITY", dtime: "DELIVERY TIME",
     origin: "ORIGIN OF THE GOODS", hs: "HS CODE", cNo: "NO", cCode: "CODE", cImg: "IMAGE", cDesc: "ITEM DESCRIPTION", cQty: "QUANTITY", cUnit: "UNIT PRICE", cTot: "TOTAL PRICE",
-    total: "TOTAL", bank: "BANK DETAILS", bBen: "BENEFICIARY:", bBank: "BANK:", bBranch: "BRANCH:", bIban: "IBAN:", bSwift: "SWIFT CODE:", draft: "DRAFT",
+    total: "TOTAL", prep: "PREPARED BY", bank: "BANK DETAILS", bBen: "BENEFICIARY:", bBank: "BANK:", bBranch: "BRANCH:", bIban: "IBAN:", bSwift: "SWIFT CODE:", draft: "DRAFT",
     plat: "PLATFORM", platSize: "PLATFORM SIZE ", matSize: " PLATFORM SIZE ", mat: {ALU: "ALU", STEEL: "STEEL"}, or: " OR "},
   tr: {buyer: "ALICI", address: "ADRES", date: "TARİH", no: "NO", payment: "ÖDEME ŞEKLİ", delivery: "TESLİM ŞEKLİ", validity: "TEKLİF GEÇERLİLİĞİ", dtime: "SEVKİYAT SÜRESİ",
     origin: "MALIN MENŞEİ", hs: "GTİP NO", cNo: "NO", cCode: "KOD", cImg: "GÖRSEL", cDesc: "ÜRÜN AÇIKLAMASI", cQty: "MİKTAR", cUnit: "BİRİM FİYAT", cTot: "TOPLAM FİYAT",
-    total: "TOPLAM", bank: "BANKA BİLGİLERİ", bBen: "HESAP SAHİBİ:", bBank: "BANKA:", bBranch: "ŞUBE:", bIban: "IBAN:", bSwift: "SWIFT KODU:", draft: "TASLAK",
+    total: "TOPLAM", prep: "HAZIRLAYAN", bank: "BANKA BİLGİLERİ", bBen: "HESAP SAHİBİ:", bBank: "BANKA:", bBranch: "ŞUBE:", bIban: "IBAN:", bSwift: "SWIFT KODU:", draft: "TASLAK",
     plat: "PLATFORM", platSize: "PLATFORM ÖLÇÜSÜ ", matSize: " PLATFORM ÖLÇÜSÜ ", mat: {ALU: "ALÜMİNYUM", STEEL: "ÇELİK"}, or: " VEYA "}
 };
 
@@ -119,7 +120,7 @@ const CATALOG_SIZES = [...new Set(CATALOG.flatMap(p => p.sizes || []))].sort((a,
 
 /* uygulama durumu (oturum açan kullanıcının verisi) */
 const S = {
-  user: null, auth: "login", authEmail: "",
+  user: null, me: null, auth: "login", authEmail: "",
   view: "proforma", step: 1,
   products: [], companies: [], settings: {}, quotes: [], customers: [],
   q: null, cfg: null, cfgTried: false, flash: null,
@@ -197,14 +198,14 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, ch => ({"&": "&amp;", "<": "
 
 /* ---------- proforma modeli ---------- */
 function baseQuote() {
-  return {id: rid(), title: TITLES[0], no: "", date: today(), currency: "USD", brand: "NDL", lang: "en",
+  return {id: rid(), title: TITLES[0], no: "", date: today(), currency: "USD", brand: "NDL", lang: "en", showPreparer: true,
     customerId: "", buyer: "", address: "", city: "", country: "", contact: "", phone: "", email: "", taxOffice: "", taxId: "",
     payment: "", delivery: "", validity: "", dtime: "",
     items: [], status: "draft", saved: false, dirty: false};
 }
 /* Proforma numarasını oluşturma anında veritabanı verir (şirket genelinde tek sayaç, değiştirilemez). Taslakta numara yoktur.
    Eski kayıtlar NDL markalı ve İngilizcedir; yeni proforma son kullanılan markayla açılır, dili cari kart seçilince belirlenir. */
-function newQuote() { return Object.assign(baseQuote(), {hsCodes: [], brand: BRANDS.includes(BRAND_DEF) ? BRAND_DEF : "NDL"}); }
+function newQuote() { return Object.assign(baseQuote(), {hsCodes: [], brand: BRANDS.includes(BRAND_DEF) ? BRAND_DEF : "NDL", showPreparer: PREP_DEF !== false}); }
 const str = v => (v == null ? "" : String(v));
 const numStr = v => (hasPrice(v) ? String(v) : "");
 function normItem(it) {
@@ -225,7 +226,9 @@ function normQuote(q) {
   q = Object.assign(baseQuote(), q);
   QUOTE_TEXT.forEach(k => { q[k] = str(q[k]).slice(0, 500); });
   if (!CUR[q.currency]) q.currency = "USD";
-  q.brand = brandOf(q); q.lang = langOf(q);
+  q.brand = brandOf(q); q.lang = langOf(q); q.showPreparer = q.showPreparer !== false;
+  if (q.preparer && typeof q.preparer === "object" && str(q.preparer.name).trim()) q.preparer = {name: str(q.preparer.name).trim().slice(0, 121), title: str(q.preparer.title).trim().slice(0, 80)};
+  else delete q.preparer;
   if (!DATE_RE.test(q.date)) q.date = today();
   q.items = (Array.isArray(q.items) ? q.items : []).map(normItem).filter(it => it.pid || it.snap);
   if (Array.isArray(q.hsCodes)) { const seen = new Set(); q.hsCodes = q.hsCodes.map(normHs).filter(h => h && !seen.has(hsKey(h)) && seen.add(hsKey(h))).slice(0, HS_MAX); }
@@ -236,6 +239,17 @@ function normQuote(q) {
   else delete q.seller;
   return q;
 }
+/* ---------- hazırlayan ----------
+   Proformayı hazırlayan: hesap ayarlarındaki ad, soyad ve unvan. Proforma oluşturulurken kopyalanır (kişi adını sonradan
+   değiştirse de kesilmiş proforma değişmez). Çıktıda gösterilip gösterilmeyeceği proformada seçilir (showPreparer). */
+const meName = () => { const m = S.me || {}; return [m.first_name, m.last_name].map(v => str(v).trim()).filter(Boolean).join(" "); };
+const mePrep = () => { const n = meName(); return n ? {name: n, title: str((S.me || {}).title).trim()} : null; };
+/* kayıtlı proformada kopyası; kaydedilmemiş taslakta oturumdaki kişi */
+const preparerOf = q => (q && q.preparer && q.preparer.name) ? q.preparer : (q && !q.saved ? mePrep() : null);
+const prepText = p => p ? p.name + (p.title ? " · " + p.title : "") : "";
+/* çıktıya basılacak hazırlayan satırı ("" ise satır yok) */
+const prepOut = q => (q && q.showPreparer !== false) ? prepText(preparerOf(q)) : "";
+
 /* ---------- HS kodları (GTİP) ----------
    Proforma oluşturulurken kullanıcı girer; birden çok kod olabilir. Eski proformalarda firma kaydındaki tek kod geçerlidir. */
 const HS_MAX = 10;
@@ -414,6 +428,7 @@ function paperHtml(q, live) {
    <div class="p-title">${esc(titleText(q))}</div>
    <table class="p-info${lang === "tr" ? " tr" : ""}"><tbody>
      ${infoRows(q).map(r => `<tr><td class="lb">${esc(r[0])}</td><td>${esc(r[1])}</td><td class="rl">${esc(r[2])}</td><td class="rv">${esc(r[3])}</td></tr>`).join("")}
+     ${prepOut(q) ? `<tr><td class="lb">${W.prep}</td><td colspan="3">${esc(prepOut(q))}</td></tr>` : ""}
    </tbody></table>
    <div class="p-warr">${esc(sText(st, "warranty", lang))}</div>
    <table class="p-items"><thead><tr>${H.map((h, i) => `<th${hw[i] ? ` style="width:${hw[i]}px"` : ""}>${esc(h)}</th>`).join("")}</tr></thead>
@@ -454,6 +469,7 @@ function pdfDoc(q) {
   if (!q.items.length) body.push([cell("", {colSpan: n}), ...fill(n - 1)]);
   body.push([{text: "", colSpan: n - 3, border: [false, false, false, false]}, ...fill(n - 4), cell(W.total, {colSpan: 2, bold: true}), {}, cell(money(qTotal(q), c), {bold: true})]);
   const info = infoRows(q).map(r => [{text: r[0], bold: true}, {text: r[1] || ""}, {text: r[2], bold: true, alignment: "center"}, {text: r[3] || "", alignment: "center"}]);
+  if (prepOut(q)) info.push([{text: W.prep, bold: true}, {text: prepOut(q), colSpan: 3}, {}, {}]);
   const bank = bankRows(q).map(r => [{text: r[0], bold: true}, {text: r[1] || ""}]);
   const thin = {hLineWidth: () => 0.6, vLineWidth: () => 0.6, hLineColor: () => B, vLineColor: () => B};
   const left = [LOGO_S ? {image: LOGO_S, fit: [118, 40]} : {text: " ", fontSize: 26}, {text: sText(st, "since", lang), fontSize: 7, margin: [104, 0, 0, 0]},
@@ -504,8 +520,15 @@ async function buildXlsx(EX, q) {
     const lines = Math.max(Math.ceil(String(r[1] || "").length / 52), Math.ceil(String(r[3] || "").length / 28), r[2].length > 11 ? 2 : 1, 1);
     ws.getRow(n).height = lines > 1 ? 6 + 10 * lines : 16;
   });
-  ws.mergeCells(`A18:${K.tot}18`); put("A18", sText(st, "warranty", lang), {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18).height = 16;
-  const H = 20;
+  const pr = prepOut(q), P = pr ? 1 : 0;
+  if (pr) {
+    const n = 17; ws.mergeCells(`A${n}:B${n}`); ws.mergeCells(`C${n}:${K.tot}${n}`);
+    put("A" + n, W.prep, {bold: true}); put("C" + n, pr);
+    for (let col = 1; col <= K.n; col++) ws.getCell(n, col).border = box;
+    ws.getRow(n).height = 16;
+  }
+  ws.mergeCells(`A${18 + P}:${K.tot}${18 + P}`); put("A" + (18 + P), sText(st, "warranty", lang), {bold: true, italic: true, color: {argb: "FFE00000"}}, C()); ws.getRow(18 + P).height = 16;
+  const H = 20 + P;
   itemHead(q, ph).forEach((h, i) => { const x = ws.getCell(H, i + 1); x.value = h; x.font = F({bold: true}); x.alignment = C(); x.border = box; });
   ws.getRow(H).height = 28;
   /* fotoğraflar C sütununa piksel konumuyla yerleşir (sütun ≈ 98 px): ana ürün 88×58, opsiyonlar ikişerli 42×28 */

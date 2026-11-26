@@ -16,6 +16,10 @@ function authError(e) {
   if (/not_admin/.test(msg)) return "Bu işlem için yönetici yetkisi gerekiyor.";
   if (/cannot_change_self/.test(msg)) return "Bu işlemi kendi hesabınıza uygulayamazsınız.";
   if (/no_user/.test(msg)) return "Kullanıcı bulunamadı; liste güncel olmayabilir.";
+  if (/name_required/.test(msg)) return "Ad ve soyad en az 2 karakter olmalı.";
+  if (/bad_phone/.test(msg)) return "Telefon numarasında yalnızca rakam, boşluk ve + ( ) - . / kullanılabilir.";
+  if (/bad_avatar/.test(msg)) return "Fotoğraf okunamadı; JPG, PNG ya da WebP bir görsel seçin.";
+  if (/bad_title/.test(msg)) return "Unvan en fazla 80 karakter olabilir.";
   if (has("email_not_confirmed") || /not confirmed/i.test(msg)) return "E-posta adresiniz henüz onaylanmadı. Gelen kutunuzdaki onay bağlantısına tıklayın.";
   if (has("user_already_exists") || /already registered/i.test(msg)) return "Bu e-posta ile kayıtlı bir hesap var. Giriş yapın ya da şifrenizi sıfırlayın.";
   if (has("weak_password") || /password should|password is known|pwned/i.test(msg)) return "Şifre yeterince güçlü değil. En az 10 karakter; büyük harf, küçük harf ve rakam kullanın.";
@@ -39,7 +43,7 @@ function supabaseStore() {
     mode: "server", uid: null,
     async session() { const {data} = await sb.auth.getSession(); return user(data.session); },
     onChange(cb) { sb.auth.onAuthStateChange((ev, s) => setTimeout(() => cb(ev, user(s)), 0)); },
-    async signUp(email, pw) { const {data, error} = await sb.auth.signUp({email, password: pw, options: {emailRedirectTo: here()}}); if (error) throw error; return {confirm: !data.session}; },
+    async signUp(email, pw, meta) { const {data, error} = await sb.auth.signUp({email, password: pw, options: {emailRedirectTo: here(), data: meta || {}}}); if (error) throw error; return {confirm: !data.session}; },
     async signIn(email, pw) { const {error} = await sb.auth.signInWithPassword({email, password: pw}); if (error) throw error; },
     async signOut() { await sb.auth.signOut(); },
     async reset(email) { const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo: here()}); if (error) throw error; },
@@ -63,7 +67,11 @@ function supabaseStore() {
       }
     },
     async del(kind, id) { const {error} = await sb.from("docs").delete().eq("kind", kind).eq("id", id); if (error) throw error; },
-    async profile() { const {data, error} = await sb.from("profiles").select("id,email,role,status,must_change").eq("id", this.uid).maybeSingle(); if (error) throw error; return data; },
+    async profile() {
+      let r = await sb.from("profiles").select("id,email,role,status,must_change,first_name,last_name,title,phone,avatar").eq("id", this.uid).maybeSingle();
+      if (r.error && (r.error.code === "42703" || /column/i.test(r.error.message || ""))) r = await sb.from("profiles").select("id,email,role,status,must_change").eq("id", this.uid).maybeSingle();   // profil sütunları henüz kurulmamış
+      if (r.error) throw r.error; return r.data;
+    },
     /* duyurular: okuma tüm aktif kullanıcılara, yazma yalnızca yöneticiye (RLS) */
     async listAnn() { const {data, error} = await sb.from("announcements").select("id,title,body,level,active,created_at").order("created_at", {ascending: false}).limit(50); if (error) throw error; return data || []; },
     async addAnn(a) { const {error} = await sb.from("announcements").insert({title: a.title, body: a.body, level: a.level, active: true}); if (error) throw error; },
@@ -98,11 +106,12 @@ function localStore() {
     mode: "demo", uid: null,
     async session() { return load().session; },
     onChange(f) { cb = f; },
-    async signUp(email, pw) {
+    async signUp(email, pw, meta) {
       const d = load(), e = email.toLowerCase();
       if (d.users[e]) throw {code: "user_already_exists"};
-      const salt = rid(), first = !Object.values(d.users).some(u => u.role === "admin");
-      d.users[e] = {id: "demo-" + rid(), salt, hash: await hash(pw, salt), role: first ? "admin" : "user", status: first ? "active" : "pending", created_at: new Date().toISOString()};
+      const salt = rid(), first = !Object.values(d.users).some(u => u.role === "admin"), m = meta || {};
+      d.users[e] = {id: "demo-" + rid(), salt, hash: await hash(pw, salt), role: first ? "admin" : "user", status: first ? "active" : "pending", created_at: new Date().toISOString(),
+        first_name: String(m.first_name || "").trim().slice(0, 60) || null, last_name: String(m.last_name || "").trim().slice(0, 60) || null};
       d.session = {id: d.users[e].id, email: e}; demoAudit(d, d.users[e].id, "login", "session", null, null, {ua: navigator.userAgent}); save(d); setTimeout(() => cb("SIGNED_IN", d.session), 0); return {confirm: false};
     },
     async signIn(email, pw) {
@@ -136,7 +145,7 @@ function localStore() {
       const d = load(), e = Object.keys(d.users).find(k => d.users[k].id === this.uid), u = e && d.users[e];
       if (!u) return null;
       if (!u.role) { u.role = Object.values(d.users).some(x => x.role === "admin") ? "user" : "admin"; u.status = u.role === "admin" ? "active" : "pending"; save(d); }
-      return {id: u.id, email: e, role: u.role, status: u.status, must_change: !!u.must_change};
+      return {id: u.id, email: e, role: u.role, status: u.status, must_change: !!u.must_change, first_name: u.first_name || null, last_name: u.last_name || null, title: u.title || null, phone: u.phone || null, avatar: u.avatar || null};
     },
     async listAnn() { const d = load(), me = Object.values(d.users).find(u => u.id === this.uid), admin = me && me.role === "admin"; return (d.ann || []).filter(a => a.active || admin).sort((a, b) => b.id - a.id); },
     async addAnn(a) { const d = load(); d.ann = d.ann || []; d.ann.push({id: Date.now(), title: a.title, body: a.body, level: a.level, active: true, created_at: new Date().toISOString()}); save(d); },
@@ -155,6 +164,16 @@ function localStore() {
         if (s && me && me.status === "active") { const el = Math.ceil((Date.now() - Date.parse(s.last_seen)) / 1000) + 5; s.active_secs += Math.min(Math.max(Number(args.add_secs) || 0, 0), 300, el); s.last_seen = now; save(d); }
         return null;
       }
+      if (fn === "update_my_profile") {
+        const e = Object.keys(d.users).find(k => d.users[k].id === this.uid), u = e && d.users[e]; if (!u) throw {message: "no_user"};
+        const f = String(args.p_first || "").trim(), l = String(args.p_last || "").trim(), ph = String(args.p_phone || "").trim(), ti = String(args.p_title || "").trim();
+        if (f.length < 2 || f.length > 60 || l.length < 2 || l.length > 60) throw {message: "name_required"};
+        if (ph && (ph.length > 40 || !/^[0-9+(). /-]+$/.test(ph))) throw {message: "bad_phone"};
+        if (ti.length > 80) throw {message: "bad_title"};
+        if (args.p_set_avatar && args.p_avatar && (args.p_avatar.length > 200000 || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(args.p_avatar))) throw {message: "bad_avatar"};
+        Object.assign(u, {first_name: f, last_name: l, title: ti || null, phone: ph || null}); if (args.p_set_avatar) u.avatar = args.p_avatar || null;
+        demoAudit(d, this.uid, "profile_update", "user", this.uid, f + " " + l, {avatar: !!args.p_set_avatar}); save(d); return null;
+      }
       if (fn === "audit_event") {
         if (!me || me.status !== "active") return null;
         if (!["pdf", "xlsx"].includes(args.p_action)) throw {message: "bad_action"};
@@ -169,7 +188,8 @@ function localStore() {
       if (fn === "admin_audit_sessions") return (d.sessions || []).filter(s => !since || Date.parse(s.last_seen) >= since).map(s => Object.assign({}, s, {email: demoEmail(d, s.user_id) || s.email})).sort((a, b) => b.started_at.localeCompare(a.started_at));
       if (fn === "admin_audit_log") return (d.audit || []).filter(e => !since || Date.parse(e.at) >= since).map(e => Object.assign({}, e, {email: demoEmail(d, e.user_id) || e.email})).sort((a, b) => b.id - a.id).slice(0, Math.min(Math.max(Number(args.max_rows) || 5000, 1), 20000));
       const entry = id => Object.entries(d.users).find(([, u]) => u.id === id);
-      if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length, must_change: !!u.must_change}))
+      if (fn === "admin_list_users") return Object.entries(d.users).map(([email, u]) => ({id: u.id, email, role: u.role || "user", status: u.status || "pending", created_at: u.created_at || null, last_sign_in_at: u.last_sign_in_at || null, email_confirmed_at: u.created_at || null, decided_at: u.decided_at || null, doc_count: Object.keys(d.docs[u.id] || {}).length, must_change: !!u.must_change,
+        first_name: u.first_name || null, last_name: u.last_name || null, title: u.title || null, phone: u.phone || null, avatar: u.avatar || null}))
         .sort((a, b) => (b.status === "pending") - (a.status === "pending") || String(b.created_at).localeCompare(String(a.created_at)));
       const hit = entry(args && args.target); if (!hit) throw {message: "no_user"};
       if (hit[1].id === this.uid) throw {message: "cannot_change_self"};
